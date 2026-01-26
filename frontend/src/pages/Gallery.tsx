@@ -26,11 +26,13 @@ export default function GalleryPage() {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const debounced = useDebounce(query, 300);
+  const pageSize = 60;
   const { logout } = useAuth();
 
   const searchQuery = useInfiniteQuery({
     queryKey: ["search", debounced],
-    queryFn: ({ pageParam = 0 }) => searchPhotos(debounced, pageParam as number),
+    queryFn: ({ pageParam = 0 }) =>
+      searchPhotos(debounced, pageParam as number, pageSize),
     getNextPageParam: (lastPage) =>
       lastPage.next_cursor ? Number(lastPage.next_cursor) : undefined,
     initialPageParam: 0,
@@ -105,6 +107,9 @@ export default function GalleryPage() {
             />
           )}
         />
+        <Typography variant="body2" sx={{ mb: 2, color: "text.secondary" }}>
+          Сейчас показано: {items.length}
+        </Typography>
         <Box sx={{ height: "calc(100% - 96px)" }}>
           <PhotoGrid
             items={items}

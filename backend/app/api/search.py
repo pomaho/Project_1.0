@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy.sql import func
 
 from app import models
 from app.db import get_db
@@ -25,8 +24,9 @@ def search(
         rows = (
             db.query(models.File)
             .filter(models.File.deleted_at.is_(None))
-            .order_by(func.random())
-            .limit(20)
+            .order_by(models.File.mtime.desc())
+            .limit(limit)
+            .offset(offset)
             .all()
         )
         items = [
@@ -40,7 +40,8 @@ def search(
             )
             for file_row in rows
         ]
-        return SearchResponse(items=items, next_cursor=None)
+        next_cursor = str(offset + limit) if len(items) == limit else None
+        return SearchResponse(items=items, next_cursor=next_cursor)
 
     ast = parse_query(q)
     filter_expr = compile_filter(ast)

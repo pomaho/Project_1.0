@@ -22,19 +22,41 @@ def _parse_exif_datetime(value: str) -> datetime | None:
         return None
 
 
+def _split_keywords(value: str) -> list[str]:
+    if not value:
+        return []
+    separators = [";", ","]
+    for sep in separators:
+        if sep in value:
+            parts = [item.strip() for item in value.split(sep)]
+            return [item for item in parts if item]
+    return [value.strip()]
+
+
 def _extract_keywords(record: dict[str, Any]) -> list[str]:
-    candidates = []
+    candidates: list[str] = []
     for key in (
+        "Subject",
+        "HierarchicalSubject",
+        "TagsList",
+        "XPKeywords",
         "XMP:Subject",
-        "IPTC:Keywords",
-        "Keywords",
+        "XMP-dc:Subject",
+        "XMP:HierarchicalSubject",
+        "XMP-lr:HierarchicalSubject",
         "XMP:TagsList",
+        "XMP:Keywords",
+        "MWG:Keywords",
+        "IPTC:Keywords",
+        "IPTC:Subject",
+        "EXIF:XPKeywords",
+        "Keywords",
     ):
         value = record.get(key)
         if isinstance(value, list):
             candidates.extend([str(item) for item in value])
         elif isinstance(value, str):
-            candidates.append(value)
+            candidates.extend(_split_keywords(value))
     return candidates
 
 

@@ -44,6 +44,18 @@ def scan_storage_task() -> dict:
             row.original_key: (row.id, row.mtime, row.size_bytes)
             for row in session.query(models.File).filter(models.File.deleted_at.is_(None))
         }
+        missing_keywords_ids = {
+            row.id
+            for row in session.query(models.File.id)
+            .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+            .filter(models.FileKeyword.file_id.is_(None), models.File.deleted_at.is_(None))
+        }
+        missing_preview_ids = {
+            row.id
+            for row in session.query(models.File.id)
+            .outerjoin(models.Preview, models.Preview.file_id == models.File.id)
+            .filter(models.Preview.file_id.is_(None), models.File.deleted_at.is_(None))
+        }
         seen_keys: set[str] = set()
         created = 0
         updated = 0
@@ -91,6 +103,11 @@ def scan_storage_task() -> dict:
                         )
                         extract_metadata_task.delay(file_id)
                         updated += 1
+                    else:
+                        if file_id in missing_keywords_ids:
+                            extract_metadata_task.delay(file_id)
+                        if file_id in missing_preview_ids:
+                            generate_previews_task.delay(file_id)
 
         deleted_keys = set(existing.keys()) - seen_keys
         if deleted_keys:

@@ -14,8 +14,16 @@ export type SearchResponse = {
   next_cursor?: string | null;
 };
 
-export async function searchPhotos(query: string, offset: number): Promise<SearchResponse> {
-  const params = new URLSearchParams({ q: query, offset: String(offset) });
+export async function searchPhotos(
+  query: string,
+  offset: number,
+  limit = 60
+): Promise<SearchResponse> {
+  const params = new URLSearchParams({
+    q: query,
+    offset: String(offset),
+    limit: String(limit),
+  });
   return apiFetch<SearchResponse>(`/search?${params.toString()}`);
 }
 
