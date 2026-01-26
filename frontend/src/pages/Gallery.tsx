@@ -48,6 +48,10 @@ export default function GalleryPage() {
     () => searchQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [searchQuery.data]
   );
+  const totals = searchQuery.data?.pages[0];
+  const totalFound = totals?.total ?? items.length;
+  const totalAll = totals?.total_all ?? items.length;
+  const totalShown = items.length;
 
   return (
     <Box sx={{ minHeight: "100vh", backgroundColor: "#f7f1ea" }}>
@@ -108,7 +112,7 @@ export default function GalleryPage() {
           )}
         />
         <Typography variant="body2" sx={{ mb: 2, color: "text.secondary" }}>
-          Сейчас показано: {items.length}
+          Найдено: {totalFound} • Всего: {totalAll} • Показано: {totalShown}
         </Typography>
         <Box sx={{ height: "calc(100% - 96px)" }}>
           <PhotoGrid
@@ -134,6 +138,7 @@ export default function GalleryPage() {
         fileId={selectedId}
         open={Boolean(selectedId)}
         onClose={() => setSelectedId(null)}
+        query={debounced}
       />
     </Box>
   );

@@ -25,7 +25,7 @@ def ensure_index(client: httpx.Client) -> None:
     elif resp.status_code >= 400:
         resp.raise_for_status()
     settings_payload = {
-        "searchableAttributes": ["keywords", "filename"],
+        "searchableAttributes": ["keywords", "filename", "title", "description"],
         "filterableAttributes": [
             "orientation",
             "shot_at",

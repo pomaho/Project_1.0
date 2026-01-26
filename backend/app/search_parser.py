@@ -3,7 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Iterator, List
 
+import re
+
 from app.keywords import normalize_keyword
+
+
+_split_re = re.compile(r"[^a-z0-9а-яё]+", re.IGNORECASE)
+
+
+def _normalize_text(value: str) -> str:
+    return value.lower().replace("ё", "е")
 
 
 @dataclass(frozen=True)
@@ -202,17 +211,35 @@ def compile_filter(node: Node | None) -> str | None:
     return _walk(node)
 
 
-def evaluate(node: Node | None, keywords_norm: set[str]) -> bool:
+def evaluate(node: Node | None, keywords_norm: set[str], text: str | None = None) -> bool:
     if node is None:
         return True
+
+    text_norm = _normalize_text(text or "")
+    text_tokens = [token for token in _split_re.split(text_norm) if token]
+
+    def _match_phrase(phrase: str) -> bool:
+        phrase_tokens = [token for token in _split_re.split(phrase) if token]
+        if not phrase_tokens:
+            return True
+        if len(phrase_tokens) == 1:
+            return phrase_tokens[0] in text_tokens
+        for idx in range(0, len(text_tokens) - len(phrase_tokens) + 1):
+            if text_tokens[idx : idx + len(phrase_tokens)] == phrase_tokens:
+                return True
+        return False
 
     def _matches_term(term: Term) -> bool:
         norm = normalize_keyword(term.value)
         if not norm:
             return True
         if term.is_prefix:
-            return any(k.startswith(norm) for k in keywords_norm)
-        return norm in keywords_norm
+            return any(k.startswith(norm) for k in keywords_norm) or any(
+                token.startswith(norm) for token in text_tokens
+            )
+        if norm in keywords_norm:
+            return True
+        return _match_phrase(_normalize_text(norm))
 
     def _walk(n: Node) -> bool:
         if isinstance(n, Term):

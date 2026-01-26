@@ -62,7 +62,12 @@ export default function PhotoGrid({
                       src={withAccessToken(item.thumb_url)}
                       alt={item.keywords.join(", ")}
                       loading="lazy"
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "contain",
+                        backgroundColor: "#101114",
+                      }}
                     />
                     <IconButton
                       size="small"

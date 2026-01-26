@@ -16,6 +16,8 @@ def build_doc(file_row: models.File) -> dict:
         "keywords": keywords_display,
         "keywords_norm": keywords_norm,
         "filename": file_row.filename,
+        "title": file_row.title,
+        "description": file_row.description,
         "shot_at": file_row.shot_at.isoformat() if file_row.shot_at else None,
         "mtime": file_row.mtime.isoformat() if file_row.mtime else None,
         "orientation": file_row.orientation.value if file_row.orientation else None,

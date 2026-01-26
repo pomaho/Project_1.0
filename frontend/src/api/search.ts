@@ -12,6 +12,9 @@ export type SearchItem = {
 export type SearchResponse = {
   items: SearchItem[];
   next_cursor?: string | null;
+  total?: number | null;
+  total_all?: number | null;
+  returned?: number | null;
 };
 
 export async function searchPhotos(

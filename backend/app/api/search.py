@@ -7,7 +7,7 @@ from app.deps import get_current_user
 from app.audit import log_action
 from app.schemas import SearchResponse, SearchResultItem
 from app.search_client import get_client, search_documents
-from app.search_parser import compile_filter, evaluate, extract_positive_terms, parse_query
+from app.search_parser import evaluate, extract_positive_terms, parse_query
 
 router = APIRouter()
 
@@ -20,6 +20,7 @@ def search(
     _: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SearchResponse:
+    total_all = db.query(models.File).filter(models.File.deleted_at.is_(None)).count()
     if not q.strip():
         rows = (
             db.query(models.File)
@@ -41,10 +42,15 @@ def search(
             for file_row in rows
         ]
         next_cursor = str(offset + limit) if len(items) == limit else None
-        return SearchResponse(items=items, next_cursor=next_cursor)
+        return SearchResponse(
+            items=items,
+            next_cursor=next_cursor,
+            total=total_all,
+            total_all=total_all,
+            returned=len(items),
+        )
 
     ast = parse_query(q)
-    filter_expr = compile_filter(ast)
     query_terms = extract_positive_terms(ast)
     query_text = " ".join(query_terms)
 
@@ -53,8 +59,6 @@ def search(
         "limit": min(limit * 3, 500),
         "offset": offset,
     }
-    if filter_expr:
-        payload["filter"] = filter_expr
 
     with get_client() as client:
         data = search_documents(client, payload)
@@ -78,7 +82,14 @@ def search(
         if not file_row:
             continue
         keywords_norm = {kw.value_norm for kw in file_row.keywords}
-        if not evaluate(ast, keywords_norm):
+        text_parts = [
+            file_row.title or "",
+            file_row.description or "",
+            file_row.filename or "",
+            " ".join(kw.value_display for kw in file_row.keywords),
+        ]
+        text_blob = " ".join(part for part in text_parts if part)
+        if not evaluate(ast, keywords_norm, text_blob):
             continue
         filtered_items.append(
             SearchResultItem(
@@ -94,7 +105,8 @@ def search(
             break
 
     next_cursor = None
-    if data.get("estimatedTotalHits", 0) > offset + limit:
+    estimated_total = int(data.get("estimatedTotalHits", 0) or 0)
+    if estimated_total > offset + limit:
         next_cursor = str(offset + limit)
     log_action(
         db,
@@ -103,4 +115,10 @@ def search(
         meta={"q": q, "offset": offset, "limit": limit},
     )
     db.commit()
-    return SearchResponse(items=filtered_items, next_cursor=next_cursor)
+    return SearchResponse(
+        items=filtered_items,
+        next_cursor=next_cursor,
+        total=estimated_total,
+        total_all=total_all,
+        returned=len(filtered_items),
+    )

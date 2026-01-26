@@ -56,6 +56,9 @@ class SearchResultItem(BaseModel):
 class SearchResponse(BaseModel):
     items: List[SearchResultItem]
     next_cursor: Optional[str] = None
+    total: Optional[int] = None
+    total_all: Optional[int] = None
+    returned: Optional[int] = None
 
 
 class FileDetail(BaseModel):
@@ -68,6 +71,8 @@ class FileDetail(BaseModel):
     height: Optional[int] = None
     orientation: str
     shot_at: Optional[datetime] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
     keywords: List[str]
     thumb_url: str
     medium_url: str

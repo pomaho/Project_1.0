@@ -33,6 +33,26 @@ def _split_keywords(value: str) -> list[str]:
     return [value.strip()]
 
 
+def _coerce_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        for item in value:
+            coerced = _coerce_text(item)
+            if coerced:
+                return coerced
+        return None
+    if isinstance(value, dict):
+        for item in value.values():
+            coerced = _coerce_text(item)
+            if coerced:
+                return coerced
+        return None
+    return None
+
+
 def _extract_keywords(record: dict[str, Any]) -> list[str]:
     candidates: list[str] = []
     for key in (
@@ -86,6 +106,22 @@ def extract_metadata(path: str) -> dict[str, Any]:
 
     mime, _ = mimetypes.guess_type(file_path.name)
 
+    title = (
+        record.get("XMP:Title")
+        or record.get("XMP-dc:Title")
+        or record.get("IPTC:Headline")
+        or record.get("XMP:Headline")
+        or record.get("EXIF:ImageDescription")
+        or record.get("Title")
+    )
+    description = (
+        record.get("XMP:Description")
+        or record.get("XMP-dc:Description")
+        or record.get("IPTC:Caption-Abstract")
+        or record.get("EXIF:ImageDescription")
+        or record.get("Description")
+    )
+
     return {
         "keywords": _extract_keywords(record),
         "shot_at": _parse_exif_datetime(
@@ -97,4 +133,6 @@ def extract_metadata(path: str) -> dict[str, Any]:
         "width": record.get("ImageWidth"),
         "height": record.get("ImageHeight"),
         "mime": record.get("MIMEType") or mime or "application/octet-stream",
+        "title": _coerce_text(title),
+        "description": _coerce_text(description),
     }

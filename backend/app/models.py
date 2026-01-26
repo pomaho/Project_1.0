@@ -77,6 +77,8 @@ class File(Base):
     height = Column(Integer, nullable=True)
     orientation = Column(Enum(Orientation), nullable=False, default=Orientation.unknown)
     shot_at = Column(DateTime, nullable=True)
+    title = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     deleted_at = Column(DateTime, nullable=True)

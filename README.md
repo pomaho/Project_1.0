@@ -59,6 +59,12 @@ make gc-previews
 make rebuild-previews
 ```
 
+- Перевычитать метаданные для конкретного файла:
+
+```bash
+make reextract-metadata FILE_ID=<uuid>
+```
+
 ## Сервисы
 - API: `http://localhost:8000`
 - Meilisearch: `http://localhost:7700`

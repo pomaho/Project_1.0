@@ -56,6 +56,13 @@ def scan_storage_task() -> dict:
             .outerjoin(models.Preview, models.Preview.file_id == models.File.id)
             .filter(models.Preview.file_id.is_(None), models.File.deleted_at.is_(None))
         }
+        missing_text_ids = {
+            row.id
+            for row in session.query(models.File.id).filter(
+                models.File.deleted_at.is_(None),
+                (models.File.title.is_(None)) | (models.File.description.is_(None)),
+            )
+        }
         seen_keys: set[str] = set()
         created = 0
         updated = 0
@@ -106,6 +113,8 @@ def scan_storage_task() -> dict:
                     else:
                         if file_id in missing_keywords_ids:
                             extract_metadata_task.delay(file_id)
+                        elif file_id in missing_text_ids:
+                            extract_metadata_task.delay(file_id)
                         if file_id in missing_preview_ids:
                             generate_previews_task.delay(file_id)
 
@@ -141,6 +150,8 @@ def extract_metadata_task(file_id: str) -> dict:
         file_row.width = meta.get("width")
         file_row.height = meta.get("height")
         file_row.shot_at = meta.get("shot_at")
+        file_row.title = meta.get("title")
+        file_row.description = meta.get("description")
         file_row.orientation = _orientation(file_row.width, file_row.height)
         file_row.updated_at = datetime.utcnow()
 

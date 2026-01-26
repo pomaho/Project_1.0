@@ -10,6 +10,8 @@ export type FileDetail = {
   height?: number | null;
   orientation: string;
   shot_at?: string | null;
+  title?: string | null;
+  description?: string | null;
   keywords: string[];
   thumb_url: string;
   medium_url: string;

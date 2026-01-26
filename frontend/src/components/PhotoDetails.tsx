@@ -16,15 +16,18 @@ import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import { useEffect, useMemo, useState } from "react";
 import { withAccessToken } from "../api/client";
 import { getDownloadToken, getFile, updateKeywords } from "../api/files";
+import { extractTerms, highlightText } from "../utils/highlight";
 
 export default function PhotoDetails({
   fileId,
   open,
   onClose,
+  query,
 }: {
   fileId: string | null;
   open: boolean;
   onClose: () => void;
+  query: string;
 }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -49,12 +52,16 @@ export default function PhotoDetails({
   const meta = useMemo(() => {
     if (!file) return [];
     return [
+      { label: "Тайтл", value: file.title ?? "—" },
+      { label: "Описание", value: file.description ?? "—" },
       { label: "Файл", value: file.filename },
       { label: "Размер", value: `${Math.round(file.size_bytes / 1024)} KB` },
       { label: "Формат", value: file.mime },
       { label: "Ориентация", value: file.orientation },
     ];
   }, [file]);
+
+  const terms = useMemo(() => extractTerms(query), [query]);
 
   const handleAddKeyword = () => {
     const trimmed = keywordInput.trim();
@@ -131,7 +138,7 @@ export default function PhotoDetails({
                   {keywords.map((kw) => (
                     <Chip
                       key={kw}
-                      label={kw}
+                      label={highlightText(kw, terms)}
                       onDelete={() => setKeywords((prev) => prev.filter((item) => item !== kw))}
                       sx={{ mb: 1 }}
                     />
@@ -170,7 +177,7 @@ export default function PhotoDetails({
                 <Stack spacing={0.5}>
                   {meta.map((item) => (
                     <Typography variant="body2" key={item.label}>
-                      {item.label}: {item.value}
+                      {item.label}: {highlightText(String(item.value), terms)}
                     </Typography>
                   ))}
                 </Stack>

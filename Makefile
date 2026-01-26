@@ -1,6 +1,6 @@
 COMPOSE_FILE=infra/compose/docker-compose.yml
 
-.PHONY: up down migrate seed-admin rescan gc-previews rebuild-previews
+.PHONY: up down migrate seed-admin rescan gc-previews rebuild-previews reextract-metadata
 
 up:
 	docker compose -f $(COMPOSE_FILE) up -d --build
@@ -22,3 +22,6 @@ gc-previews:
 
 rebuild-previews:
 	docker compose -f $(COMPOSE_FILE) run --rm api python -m app.scripts.rebuild_previews
+
+reextract-metadata:
+	docker compose -f $(COMPOSE_FILE) run --rm api python -m app.scripts.reextract_metadata $(FILE_ID)
