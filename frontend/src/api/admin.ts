@@ -53,21 +53,30 @@ export async function fetchAudit(limit = 100, offset = 0): Promise<AuditLog[]> {
 }
 
 export async function rescanIndex(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>("/admin/index/rescan", { method: "POST" });
+  return apiFetch<{ status: string; run_id?: string }>("/admin/index/rescan", {
+    method: "POST",
+  });
 }
 
-export async function reindexSearch(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>("/admin/index/reindex", { method: "POST" });
+export async function refreshAll(): Promise<{ status: string; run_id?: string }> {
+  return apiFetch<{ status: string; run_id?: string }>("/admin/index/refresh-all", {
+    method: "POST",
+  });
 }
 
-export async function gcPreviews(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>("/admin/index/gc-previews", { method: "POST" });
-}
+export type IndexRunStatus = {
+  id: string;
+  status: string;
+  scanned: number;
+  created: number;
+  updated: number;
+  restored: number;
+  deleted: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+};
 
-export async function rebuildPreviews(): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>("/admin/index/rebuild-previews", { method: "POST" });
-}
-
-export async function indexStatus(): Promise<{ files: number }> {
-  return apiFetch<{ files: number }>("/admin/index/status");
+export async function indexStatus(): Promise<{ files: number; run?: IndexRunStatus | null }> {
+  return apiFetch<{ files: number; run?: IndexRunStatus | null }>("/admin/index/status");
 }

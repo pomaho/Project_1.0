@@ -30,7 +30,7 @@ def _orientation(width: int | None, height: int | None) -> models.Orientation:
 
 
 @celery_app.task(name="scan_storage")
-def scan_storage_task() -> dict:
+def scan_storage_task(run_id: str | None = None) -> dict:
     if settings.storage_mode != "filesystem":
         return {"status": "skipped", "reason": "non-filesystem mode"}
 
@@ -40,10 +40,26 @@ def scan_storage_task() -> dict:
 
     session: Session = SessionLocal()
     try:
+        if run_id:
+            run = session.query(models.IndexRun).filter(models.IndexRun.id == run_id).first()
+        else:
+            run = models.IndexRun(status=models.IndexRunStatus.running)
+            session.add(run)
+            session.flush()
+            run_id = run.id
+
+        rows_all = session.query(
+            models.File.id,
+            models.File.original_key,
+            models.File.mtime,
+            models.File.size_bytes,
+            models.File.deleted_at,
+        ).all()
         existing = {
-            row.original_key: (row.id, row.mtime, row.size_bytes)
-            for row in session.query(models.File).filter(models.File.deleted_at.is_(None))
+            row.original_key: (row.id, row.mtime, row.size_bytes, row.deleted_at)
+            for row in rows_all
         }
+        existing_active_keys = {row.original_key for row in rows_all if row.deleted_at is None}
         missing_keywords_ids = {
             row.id
             for row in session.query(models.File.id)
@@ -66,6 +82,9 @@ def scan_storage_task() -> dict:
         seen_keys: set[str] = set()
         created = 0
         updated = 0
+        restored = 0
+        scanned = 0
+        last_flush = 0
 
         for dirpath, _, filenames in os.walk(root):
             for filename in filenames:
@@ -79,6 +98,7 @@ def scan_storage_task() -> dict:
                     continue
 
                 seen_keys.add(full_path)
+                scanned += 1
                 existing_row = existing.get(full_path)
                 if not existing_row:
                     mime, _ = mimetypes.guess_type(filename)
@@ -98,9 +118,22 @@ def scan_storage_task() -> dict:
                     extract_metadata_task.delay(file_row.id)
                     created += 1
                 else:
-                    file_id, mtime, size = existing_row
+                    file_id, mtime, size, deleted_at = existing_row
                     current_mtime = datetime.utcfromtimestamp(stat.st_mtime)
-                    if current_mtime != mtime or stat.st_size != size:
+                    if deleted_at is not None:
+                        session.query(models.File).filter(models.File.id == file_id).update(
+                            {
+                                "deleted_at": None,
+                                "size_bytes": stat.st_size,
+                                "mtime": current_mtime,
+                                "updated_at": datetime.utcnow(),
+                            }
+                        )
+                        extract_metadata_task.delay(file_id)
+                        generate_previews_task.delay(file_id)
+                        upsert_search_doc_task.delay(file_id)
+                        restored += 1
+                    elif current_mtime != mtime or stat.st_size != size:
                         session.query(models.File).filter(models.File.id == file_id).update(
                             {
                                 "size_bytes": stat.st_size,
@@ -118,7 +151,19 @@ def scan_storage_task() -> dict:
                         if file_id in missing_preview_ids:
                             generate_previews_task.delay(file_id)
 
-        deleted_keys = set(existing.keys()) - seen_keys
+                if run_id and scanned - last_flush >= 500:
+                    session.query(models.IndexRun).filter(models.IndexRun.id == run_id).update(
+                        {
+                            "scanned_count": scanned,
+                            "created_count": created,
+                            "updated_count": updated,
+                            "restored_count": restored,
+                        }
+                    )
+                    session.commit()
+                    last_flush = scanned
+
+        deleted_keys = existing_active_keys - seen_keys
         if deleted_keys:
             deleted_ids = [
                 row.id
@@ -131,8 +176,37 @@ def scan_storage_task() -> dict:
             for file_id in deleted_ids:
                 remove_search_doc_task.delay(file_id)
 
+        if run_id:
+            session.query(models.IndexRun).filter(models.IndexRun.id == run_id).update(
+                {
+                    "status": models.IndexRunStatus.completed,
+                    "scanned_count": scanned,
+                    "created_count": created,
+                    "updated_count": updated,
+                    "restored_count": restored,
+                    "deleted_count": len(deleted_keys),
+                    "finished_at": datetime.utcnow(),
+                }
+            )
         session.commit()
-        return {"status": "ok", "created": created, "updated": updated, "deleted": len(deleted_keys)}
+        return {
+            "status": "ok",
+            "created": created,
+            "updated": updated,
+            "restored": restored,
+            "deleted": len(deleted_keys),
+        }
+    except Exception as exc:
+        if run_id:
+            session.query(models.IndexRun).filter(models.IndexRun.id == run_id).update(
+                {
+                    "status": models.IndexRunStatus.failed,
+                    "error": str(exc),
+                    "finished_at": datetime.utcnow(),
+                }
+            )
+            session.commit()
+        raise
     finally:
         session.close()
 
@@ -313,6 +387,30 @@ def queue_missing_previews_task() -> dict:
         )
         for (file_id,) in rows:
             generate_previews_task.delay(file_id)
+            queued += 1
+        return {"status": "ok", "queued": queued}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="queue_missing_metadata")
+def queue_missing_metadata_task() -> dict:
+    session: Session = SessionLocal()
+    queued = 0
+    try:
+        rows = (
+            session.query(models.File.id)
+            .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+            .filter(
+                models.File.deleted_at.is_(None),
+                (models.FileKeyword.file_id.is_(None))
+                | (models.File.title.is_(None))
+                | (models.File.description.is_(None)),
+            )
+            .all()
+        )
+        for (file_id,) in rows:
+            extract_metadata_task.delay(file_id)
             queued += 1
         return {"status": "ok", "queued": queued}
     finally:

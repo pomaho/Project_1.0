@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from celery import Celery
+from celery.schedules import crontab
 
 from app.config import settings
 
@@ -15,3 +16,12 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
 )
+
+rescan_minutes = max(1, settings.rescan_interval_minutes)
+if settings.rescan_interval_minutes > 0:
+    celery_app.conf.beat_schedule = {
+        "periodic-rescan": {
+            "task": "scan_storage",
+            "schedule": crontab(minute=f"*/{rescan_minutes}"),
+        }
+    }

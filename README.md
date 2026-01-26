@@ -41,6 +41,8 @@ make seed-admin
 make rescan
 ```
 
+- Периодический рескан включается через `RESCAN_INTERVAL_MINUTES` (>0). Значение `0` отключает автоскан.
+
 - Полный реиндекс поиска:
 
 ```bash
@@ -58,6 +60,8 @@ make gc-previews
 ```bash
 make rebuild-previews
 ```
+
+- Для полного обновления используйте кнопку «Обновить базу» в админке или endpoint `/api/admin/index/refresh-all`.
 
 - Перевычитать метаданные для конкретного файла:
 

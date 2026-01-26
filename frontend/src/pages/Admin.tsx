@@ -18,20 +18,19 @@ import {
   MenuItem,
   FormControl,
   InputLabel,
+  LinearProgress,
 } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import {
   AdminUser,
   AuditLog,
+  IndexRunStatus,
   createUser,
   deleteUser,
   fetchAudit,
-  gcPreviews,
-  rebuildPreviews,
   indexStatus,
   listUsers,
-  reindexSearch,
-  rescanIndex,
+  refreshAll,
   updateUser,
 } from "../api/admin";
 
@@ -41,14 +40,23 @@ export default function AdminPage() {
   const [tab, setTab] = useState(0);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [audit, setAudit] = useState<AuditLog[]>([]);
-  const [status, setStatus] = useState<{ files: number } | null>(null);
+  const [status, setStatus] = useState<{ files: number; run?: IndexRunStatus | null } | null>(
+    null
+  );
   const [form, setForm] = useState({ email: "", password: "", role: "viewer" });
+  const [refreshBusy, setRefreshBusy] = useState(false);
 
   useEffect(() => {
     listUsers().then(setUsers).catch(() => setUsers([]));
     fetchAudit().then(setAudit).catch(() => setAudit([]));
     indexStatus().then(setStatus).catch(() => setStatus(null));
+    const interval = window.setInterval(() => {
+      indexStatus().then(setStatus).catch(() => setStatus(null));
+    }, 5000);
+    return () => window.clearInterval(interval);
   }, []);
+
+  const run = status?.run ?? null;
 
   const handleCreateUser = async () => {
     const payload = { ...form };
@@ -80,25 +88,60 @@ export default function AdminPage() {
 
   return (
     <Container maxWidth="xl" sx={{ py: 4 }}>
-      <Typography variant="h4" sx={{ fontWeight: 700, mb: 2 }}>
-        Администрирование
-      </Typography>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
+        <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          Администрирование
+        </Typography>
+        <Button variant="text" href="/">
+          На главную
+        </Button>
+      </Stack>
       <Paper sx={{ p: 2, mb: 3 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">
           <Typography variant="body1">Файлов в индексе: {status?.files ?? "—"}</Typography>
-          <Button variant="contained" onClick={() => rescanIndex()}>
-            Rescan
-          </Button>
-          <Button variant="outlined" onClick={() => reindexSearch()}>
-            Reindex
-          </Button>
-          <Button variant="outlined" onClick={() => gcPreviews()}>
-            GC previews
-          </Button>
-          <Button variant="outlined" onClick={() => rebuildPreviews()}>
-            Rebuild previews
+          <Button
+            variant="contained"
+            onClick={async () => {
+              setRefreshBusy(true);
+              try {
+                await refreshAll();
+              } finally {
+                setRefreshBusy(false);
+              }
+            }}
+            disabled={refreshBusy}
+          >
+            Обновить базу
           </Button>
         </Stack>
+        {run && (
+          <Box sx={{ mt: 2 }}>
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              Статус: {run.status} • Просканировано: {run.scanned} • Создано: {run.created} •
+              Обновлено: {run.updated} • Восстановлено: {run.restored} • Удалено: {run.deleted}
+            </Typography>
+            {run.status === "running" ? (
+              <LinearProgress sx={{ height: 8, borderRadius: 999 }} />
+            ) : (
+              <LinearProgress
+                variant="determinate"
+                value={100}
+                color={run.status === "failed" ? "error" : "success"}
+                sx={{ height: 8, borderRadius: 999 }}
+              />
+            )}
+            {run.finished_at && (
+              <Typography variant="caption" sx={{ display: "block", mt: 1 }}>
+                Завершено: {new Date(run.finished_at).toLocaleString()}
+              </Typography>
+            )}
+            {run.error && (
+              <Typography variant="caption" color="error" sx={{ display: "block" }}>
+                Ошибка: {run.error}
+              </Typography>
+            )}
+          </Box>
+        )}
       </Paper>
       <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ mb: 2 }}>
         <Tab label="Пользователи" />

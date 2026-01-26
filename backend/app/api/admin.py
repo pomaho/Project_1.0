@@ -8,49 +8,54 @@ from app.db import get_db
 from app.deps import require_admin
 from app.schemas import AuditLogOut, UserCreate, UserOut, UserUpdate
 from app.security import hash_password
-from app.tasks import gc_previews_task, queue_missing_previews_task, reindex_search_task, scan_storage_task
+from app.tasks import (
+    queue_missing_metadata_task,
+    queue_missing_previews_task,
+    reindex_search_task,
+    scan_storage_task,
+)
 
 router = APIRouter()
 
 
-@router.post("/index/rescan")
-def rescan(
+@router.post("/index/refresh-all")
+def refresh_all(
     admin: models.User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> dict:
-    scan_storage_task.delay()
+    run = models.IndexRun(status=models.IndexRunStatus.running)
+    db.add(run)
+    db.commit()
+    scan_storage_task.delay(run.id)
+    queue_missing_metadata_task.delay()
+    queue_missing_previews_task.delay()
+    reindex_search_task.delay()
     log_action(db, user_id=admin.id, action=models.AuditAction.rescan)
     db.commit()
-    return {"status": "queued"}
-
-
-@router.post("/index/reindex")
-def reindex(
-    admin: models.User = Depends(require_admin),
-    db: Session = Depends(get_db),
-) -> dict:
-    reindex_search_task.delay()
-    log_action(db, user_id=admin.id, action=models.AuditAction.reindex)
-    db.commit()
-    return {"status": "queued"}
-
-
-@router.post("/index/gc-previews")
-def gc_previews(_: models.User = Depends(require_admin)) -> dict:
-    gc_previews_task.delay()
-    return {"status": "queued"}
-
-
-@router.post("/index/rebuild-previews")
-def rebuild_previews(_: models.User = Depends(require_admin)) -> dict:
-    queue_missing_previews_task.delay()
-    return {"status": "queued"}
+    return {"status": "queued", "run_id": run.id}
 
 
 @router.get("/index/status")
 def index_status(_: models.User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     files_count = db.execute(text("SELECT COUNT(*) FROM files")).scalar()
-    return {"files": files_count}
+    last_run = (
+        db.query(models.IndexRun).order_by(models.IndexRun.started_at.desc()).first()
+    )
+    run_payload = None
+    if last_run:
+        run_payload = {
+            "id": last_run.id,
+            "status": last_run.status.value,
+            "scanned": last_run.scanned_count,
+            "created": last_run.created_count,
+            "updated": last_run.updated_count,
+            "restored": last_run.restored_count,
+            "deleted": last_run.deleted_count,
+            "started_at": last_run.started_at,
+            "finished_at": last_run.finished_at,
+            "error": last_run.error,
+        }
+    return {"files": files_count, "run": run_payload}
 
 
 @router.get("/users", response_model=list[UserOut])

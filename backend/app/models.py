@@ -50,6 +50,12 @@ class AuditAction(str, enum.Enum):
     rescan = "rescan"
 
 
+class IndexRunStatus(str, enum.Enum):
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -124,3 +130,18 @@ class AuditLog(Base):
     action = Column(Enum(AuditAction), nullable=False)
     meta = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class IndexRun(Base):
+    __tablename__ = "index_runs"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    status = Column(Enum(IndexRunStatus), nullable=False, default=IndexRunStatus.running)
+    scanned_count = Column(Integer, nullable=False, default=0)
+    created_count = Column(Integer, nullable=False, default=0)
+    updated_count = Column(Integer, nullable=False, default=0)
+    restored_count = Column(Integer, nullable=False, default=0)
+    deleted_count = Column(Integer, nullable=False, default=0)
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
