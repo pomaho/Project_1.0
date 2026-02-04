@@ -46,7 +46,7 @@ export default function PhotoGrid({
                 return <Box style={style} />;
               }
               return (
-                <Box style={style} sx={{ p: 1 }}>
+                <Box style={style} sx={{ p: 1, cursor: "pointer" }}>
                   <Box
                     sx={{
                       position: "relative",
@@ -55,6 +55,12 @@ export default function PhotoGrid({
                       borderRadius: 2,
                       overflow: "hidden",
                       backgroundColor: "#e9edf5",
+                      cursor: "pointer",
+                      transition: "transform 0.2s ease, box-shadow 0.2s ease",
+                      "&:hover": {
+                        transform: "translateY(-2px) scale(1.01)",
+                        boxShadow: "0 10px 20px rgba(0,0,0,0.15)",
+                      },
                     }}
                     onClick={() => onSelect(item)}
                   >
@@ -67,6 +73,7 @@ export default function PhotoGrid({
                         height: "100%",
                         objectFit: "contain",
                         backgroundColor: "#101114",
+                        cursor: "pointer",
                       }}
                     />
                     <IconButton
