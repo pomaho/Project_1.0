@@ -1,7 +1,13 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY frontend/package.json /app/package.json
-RUN npm install
+ENV npm_config_platform=linux
+ENV npm_config_arch=x64
+ENV npm_config_libc=musl
+RUN npm config set registry https://registry.npmjs.org/ \
+    && npm config set fund false \
+    && npm config set audit false
+RUN npm install --loglevel=info
 COPY frontend /app
 RUN npm run build
 

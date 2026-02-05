@@ -56,7 +56,7 @@ services:
         condition: service_started
     volumes:
       - ../../backend:/app
-      - ../../data/originals:/data/originals:ro
+      - ${ORIGINALS_PATH}:/data/originals:ro
       - ../../data/previews:/data/previews
     ports:
       - "8000:8000"
@@ -80,7 +80,7 @@ services:
         condition: service_healthy
     volumes:
       - ../../backend:/app
-      - ../../data/originals:/data/originals:ro
+      - ${ORIGINALS_PATH}:/data/originals:ro
       - ../../data/previews:/data/previews
 
   beat:
@@ -97,7 +97,7 @@ services:
         condition: service_healthy
     volumes:
       - ../../backend:/app
-      - ../../data/originals:/data/originals:ro
+      - ${ORIGINALS_PATH}:/data/originals:ro
       - ../../data/previews:/data/previews
 
   frontend:

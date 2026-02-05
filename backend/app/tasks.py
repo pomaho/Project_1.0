@@ -19,6 +19,23 @@ from app.search_index import remove_file, upsert_file
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
 
+def _normalize_path(path: str) -> str:
+    return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+
+
+def _is_excluded(path: str, excluded: list[str]) -> bool:
+    if not excluded:
+        return False
+    normalized = _normalize_path(path)
+    for item in excluded:
+        if not item:
+            continue
+        target = _normalize_path(item)
+        if normalized == target or normalized.startswith(target + os.sep):
+            return True
+    return False
+
+
 def _orientation(width: int | None, height: int | None) -> models.Orientation:
     if not width or not height:
         return models.Orientation.unknown
@@ -37,6 +54,7 @@ def scan_storage_task(run_id: str | None = None) -> dict:
     root = Path(settings.filesystem_root)
     if not root.exists():
         return {"status": "error", "reason": "filesystem root missing"}
+    excluded = settings.exclude_paths_list
 
     session: Session = SessionLocal()
     try:
@@ -86,7 +104,16 @@ def scan_storage_task(run_id: str | None = None) -> dict:
         scanned = 0
         last_flush = 0
 
-        for dirpath, _, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root):
+            if _is_excluded(dirpath, excluded):
+                dirnames[:] = []
+                continue
+            if excluded:
+                dirnames[:] = [
+                    name
+                    for name in dirnames
+                    if not _is_excluded(os.path.join(dirpath, name), excluded)
+                ]
             for filename in filenames:
                 ext = Path(filename).suffix.lower()
                 if ext not in SUPPORTED_EXTS:

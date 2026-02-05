@@ -10,7 +10,7 @@ MEILI_INDEX = "files"
 def _headers() -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if settings.meili_key:
-        headers["X-Meili-API-Key"] = settings.meili_key
+        headers["Authorization"] = f"Bearer {settings.meili_key}"
     return headers
 
 

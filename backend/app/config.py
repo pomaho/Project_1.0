@@ -20,12 +20,23 @@ def parse_duration_to_seconds(value: str, default_seconds: int) -> int:
     return default_seconds
 
 
+def parse_path_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    raw = value.strip()
+    if not raw:
+        return []
+    parts = [part.strip() for part in raw.replace(",", ";").split(";")]
+    return [part for part in parts if part]
+
+
 class Settings(BaseSettings):
     app_env: str = "dev"
     storage_mode: str = "filesystem"
 
     filesystem_root: str = "/data/originals"
     previews_root: str = "/data/previews"
+    exclude_paths: str = ""
 
     minio_endpoint: str = "http://minio:9000"
     minio_access_key: str = ""
@@ -45,6 +56,7 @@ class Settings(BaseSettings):
 
     rate_limit_downloads_per_min: int = 20
     rescan_interval_minutes: int = 60
+    reindex_delay_seconds: int = 120
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -59,6 +71,10 @@ class Settings(BaseSettings):
     @property
     def download_token_ttl_seconds(self) -> int:
         return parse_duration_to_seconds(self.download_token_ttl, 90)
+
+    @property
+    def exclude_paths_list(self) -> list[str]:
+        return parse_path_list(self.exclude_paths)
 
 
 settings = Settings()

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.audit import log_action
+from app.config import settings
 from app.db import get_db
 from app.deps import require_admin
 from app.schemas import AuditLogOut, UserCreate, UserOut, UserUpdate
@@ -29,7 +30,7 @@ def refresh_all(
     scan_storage_task.delay(run.id)
     queue_missing_metadata_task.delay()
     queue_missing_previews_task.delay()
-    reindex_search_task.delay()
+    reindex_search_task.apply_async(countdown=settings.reindex_delay_seconds)
     log_action(db, user_id=admin.id, action=models.AuditAction.rescan)
     db.commit()
     return {"status": "queued", "run_id": run.id}
