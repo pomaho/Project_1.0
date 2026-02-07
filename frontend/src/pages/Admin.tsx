@@ -25,11 +25,15 @@ import {
   AdminUser,
   AuditLog,
   IndexRunStatus,
+  OrphanPreviewStatus,
+  cancelIndex,
+  cleanupOrphanPreviews,
   createUser,
   deleteUser,
   fetchAudit,
   indexStatus,
   listUsers,
+  orphanPreviewStatus,
   previewStatus,
   PreviewStatus,
   refreshPreviews,
@@ -47,24 +51,35 @@ export default function AdminPage() {
     null
   );
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
+  const [orphans, setOrphans] = useState<OrphanPreviewStatus | null>(null);
   const [form, setForm] = useState({ email: "", password: "", role: "viewer" });
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [orphanBusy, setOrphanBusy] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
 
   useEffect(() => {
     listUsers().then(setUsers).catch(() => setUsers([]));
     fetchAudit().then(setAudit).catch(() => setAudit([]));
     indexStatus().then(setStatus).catch(() => setStatus(null));
     previewStatus().then(setPreview).catch(() => setPreview(null));
+    orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
     const interval = window.setInterval(() => {
       indexStatus().then(setStatus).catch(() => setStatus(null));
       previewStatus().then(setPreview).catch(() => setPreview(null));
+      orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
     }, 5000);
     return () => window.clearInterval(interval);
   }, []);
 
   const run = status?.run ?? null;
   const previewProgress = Math.round(((preview?.progress ?? 0) * 100) || 0);
+  const orphanProgress = orphans?.total_orphans
+    ? Math.min(
+        100,
+        Math.round(((orphans?.deleted ?? 0) / orphans.total_orphans) * 100)
+      )
+    : 0;
 
   const handleCreateUser = async () => {
     const payload = { ...form };
@@ -120,6 +135,21 @@ export default function AdminPage() {
             disabled={refreshBusy}
           >
             Обновить базу
+          </Button>
+          <Button
+            variant="outlined"
+            color="warning"
+            onClick={async () => {
+              setCancelBusy(true);
+              try {
+                await cancelIndex();
+              } finally {
+                setCancelBusy(false);
+              }
+            }}
+            disabled={cancelBusy || run?.status !== "running"}
+          >
+            Остановить скан
           </Button>
         </Stack>
         {run && (
@@ -182,6 +212,36 @@ export default function AdminPage() {
             value={previewProgress}
             sx={{ height: 8, borderRadius: 999 }}
           />
+        </Box>
+        <Box sx={{ mt: 2 }}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">
+            <Typography variant="body2">
+              Сирот: {orphans?.total_orphans ?? "—"} • Удалено: {orphans?.deleted ?? "—"} •
+              Обработано: {orphans?.processed ?? "—"} • Статус: {orphans?.status ?? "—"}
+            </Typography>
+            <Button
+              variant="outlined"
+              color="warning"
+              onClick={async () => {
+                setOrphanBusy(true);
+                try {
+                  await cleanupOrphanPreviews();
+                } finally {
+                  setOrphanBusy(false);
+                }
+              }}
+              disabled={orphanBusy}
+            >
+              Очистить сироты
+            </Button>
+          </Stack>
+          <Box sx={{ mt: 1 }}>
+            <LinearProgress
+              variant="determinate"
+              value={orphanProgress}
+              sx={{ height: 8, borderRadius: 999 }}
+            />
+          </Box>
         </Box>
       </Paper>
       <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ mb: 2 }}>

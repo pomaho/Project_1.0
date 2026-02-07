@@ -21,6 +21,9 @@ from app.redis_client import get_redis
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
 PREVIEW_STATUS_KEY = "preview:refresh:status"
+PREVIEW_EXCLUSIVE_KEY = "preview:exclusive"
+ORPHAN_STATUS_KEY = "preview:orphans:status"
+INDEX_CANCEL_PREFIX = "index:cancel"
 
 
 def _normalize_path(path: str) -> str:
@@ -33,6 +36,54 @@ def _normalize_path(path: str) -> str:
     while "//" in normalized:
         normalized = normalized.replace("//", "/")
     return normalized.lower().rstrip("/")
+
+
+def _cancel_key(run_id: str) -> str:
+    return f"{INDEX_CANCEL_PREFIX}:{run_id}"
+
+
+def is_preview_exclusive() -> bool:
+    client = get_redis()
+    return bool(client.get(PREVIEW_EXCLUSIVE_KEY))
+
+
+def set_preview_exclusive(enabled: bool) -> None:
+    client = get_redis()
+    if enabled:
+        client.set(PREVIEW_EXCLUSIVE_KEY, "1")
+    else:
+        client.delete(PREVIEW_EXCLUSIVE_KEY)
+
+
+def set_orphan_status(payload: dict) -> None:
+    client = get_redis()
+    client.set(ORPHAN_STATUS_KEY, json.dumps(payload))
+
+
+def get_orphan_status() -> dict | None:
+    client = get_redis()
+    raw = client.get(ORPHAN_STATUS_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _is_cancelled(run_id: str) -> bool:
+    client = get_redis()
+    return bool(client.get(_cancel_key(run_id)))
+
+
+def _set_cancelled(run_id: str) -> None:
+    client = get_redis()
+    client.set(_cancel_key(run_id), "1")
+
+
+def _clear_cancelled(run_id: str) -> None:
+    client = get_redis()
+    client.delete(_cancel_key(run_id))
 
 
 def _is_excluded(path: str, excluded: list[str]) -> bool:
@@ -96,12 +147,6 @@ def scan_storage_task(run_id: str | None = None) -> dict:
             .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
             .filter(models.FileKeyword.file_id.is_(None), models.File.deleted_at.is_(None))
         }
-        missing_preview_ids = {
-            row.id
-            for row in session.query(models.File.id)
-            .outerjoin(models.Preview, models.Preview.file_id == models.File.id)
-            .filter(models.Preview.file_id.is_(None), models.File.deleted_at.is_(None))
-        }
         missing_text_ids = {
             row.id
             for row in session.query(models.File.id).filter(
@@ -116,7 +161,22 @@ def scan_storage_task(run_id: str | None = None) -> dict:
         scanned = 0
         last_flush = 0
 
+        def _abort_run() -> dict:
+            if run_id:
+                session.query(models.IndexRun).filter(models.IndexRun.id == run_id).update(
+                    {
+                        "status": models.IndexRunStatus.failed,
+                        "error": "cancelled by operator",
+                        "finished_at": datetime.utcnow(),
+                    }
+                )
+                session.commit()
+                _clear_cancelled(run_id)
+            return {"status": "cancelled"}
+
         for dirpath, dirnames, filenames in os.walk(root):
+            if run_id and _is_cancelled(run_id):
+                return _abort_run()
             if _is_excluded(dirpath, excluded):
                 dirnames[:] = []
                 continue
@@ -127,6 +187,8 @@ def scan_storage_task(run_id: str | None = None) -> dict:
                     if not _is_excluded(os.path.join(dirpath, name), excluded)
                 ]
             for filename in filenames:
+                if run_id and _is_cancelled(run_id):
+                    return _abort_run()
                 ext = Path(filename).suffix.lower()
                 if ext not in SUPPORTED_EXTS:
                     continue
@@ -169,7 +231,6 @@ def scan_storage_task(run_id: str | None = None) -> dict:
                             }
                         )
                         extract_metadata_task.delay(file_id)
-                        generate_previews_task.delay(file_id)
                         upsert_search_doc_task.delay(file_id)
                         restored += 1
                     elif current_mtime != mtime or stat.st_size != size:
@@ -187,8 +248,6 @@ def scan_storage_task(run_id: str | None = None) -> dict:
                             extract_metadata_task.delay(file_id)
                         elif file_id in missing_text_ids:
                             extract_metadata_task.delay(file_id)
-                        if file_id in missing_preview_ids:
-                            generate_previews_task.delay(file_id)
 
                 if run_id and scanned - last_flush >= 500:
                     session.query(models.IndexRun).filter(models.IndexRun.id == run_id).update(
@@ -228,10 +287,10 @@ def scan_storage_task(run_id: str | None = None) -> dict:
                 }
             )
         session.commit()
+        if run_id:
+            _clear_cancelled(run_id)
         # Cleanup previews for deleted files after each rescan
         gc_previews_task.delay()
-        # Ensure any missing previews are queued after each rescan
-        queue_missing_previews_task.delay()
         return {
             "status": "ok",
             "created": created,
@@ -256,6 +315,13 @@ def scan_storage_task(run_id: str | None = None) -> dict:
 
 @celery_app.task(name="extract_metadata")
 def extract_metadata_task(file_id: str) -> dict:
+    if is_preview_exclusive():
+        extract_metadata_task.apply_async(
+            args=[file_id],
+            countdown=settings.preview_exclusive_retry_seconds,
+        )
+        return {"status": "deferred", "reason": "preview_exclusive"}
+
     session: Session = SessionLocal()
     try:
         file_row = session.query(models.File).filter(models.File.id == file_id).first()
@@ -305,7 +371,6 @@ def extract_metadata_task(file_id: str) -> dict:
 
         file_row.keywords = new_keywords
         session.commit()
-        generate_previews_task.delay(file_row.id)
         upsert_search_doc_task.delay(file_row.id)
         return {"status": "ok", "added": added, "removed": removed}
     finally:
@@ -324,22 +389,19 @@ def generate_previews_task(file_id: str) -> dict:
             return {"status": "missing"}
 
         previews_root = settings.previews_root
-        thumb_data = generate_preview(file_row.original_key, "thumb")
-        medium_data = generate_preview(file_row.original_key, "medium")
-
-        thumb_key = write_preview(previews_root, file_row.id, "thumb", thumb_data)
-        medium_key = write_preview(previews_root, file_row.id, "medium", medium_data)
+        preview_data = generate_preview(file_row.original_key, "medium")
+        preview_key = write_preview(previews_root, file_row.id, "medium", preview_data)
 
         preview_row = session.query(models.Preview).filter(models.Preview.file_id == file_row.id).first()
         if preview_row:
-            preview_row.thumb_key = thumb_key
-            preview_row.medium_key = medium_key
+            preview_row.thumb_key = preview_key
+            preview_row.medium_key = preview_key
             preview_row.updated_at = datetime.utcnow()
         else:
             preview_row = models.Preview(
                 file_id=file_row.id,
-                thumb_key=thumb_key,
-                medium_key=medium_key,
+                thumb_key=preview_key,
+                medium_key=preview_key,
                 updated_at=datetime.utcnow(),
             )
             session.add(preview_row)
@@ -352,6 +414,13 @@ def generate_previews_task(file_id: str) -> dict:
 
 @celery_app.task(name="upsert_search_doc")
 def upsert_search_doc_task(file_id: str) -> dict:
+    if is_preview_exclusive():
+        upsert_search_doc_task.apply_async(
+            args=[file_id],
+            countdown=settings.preview_exclusive_retry_seconds,
+        )
+        return {"status": "deferred", "reason": "preview_exclusive"}
+
     session: Session = SessionLocal()
     try:
         upsert_file(session, file_id)
@@ -438,6 +507,12 @@ def queue_missing_previews_task() -> dict:
 
 @celery_app.task(name="queue_missing_metadata")
 def queue_missing_metadata_task() -> dict:
+    if is_preview_exclusive():
+        queue_missing_metadata_task.apply_async(
+            countdown=settings.preview_exclusive_retry_seconds,
+        )
+        return {"status": "deferred", "reason": "preview_exclusive"}
+
     session: Session = SessionLocal()
     queued = 0
     try:
@@ -458,6 +533,12 @@ def queue_missing_metadata_task() -> dict:
         return {"status": "ok", "queued": queued}
     finally:
         session.close()
+
+
+@celery_app.task(name="cancel_index_run")
+def cancel_index_run(run_id: str) -> dict:
+    _set_cancelled(run_id)
+    return {"status": "queued"}
 
 
 def _compute_preview_counts(session: Session) -> dict:
@@ -503,11 +584,26 @@ def get_preview_status() -> dict | None:
         return None
 
 
+def _remove_empty_dirs(root: str) -> int:
+    removed = 0
+    for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+        if dirpath == root:
+            continue
+        if not dirnames and not filenames:
+            try:
+                os.rmdir(dirpath)
+                removed += 1
+            except OSError:
+                continue
+    return removed
+
+
 @celery_app.task(name="refresh_previews_cycle")
 def refresh_previews_cycle(round_num: int, max_rounds: int | None = None) -> dict:
     session: Session = SessionLocal()
     try:
         max_rounds = max_rounds or settings.preview_check_rounds
+        set_preview_exclusive(True)
         counts = _compute_preview_counts(session)
         payload = {
             "status": "running" if round_num < max_rounds else "completed",
@@ -532,7 +628,94 @@ def refresh_previews_cycle(round_num: int, max_rounds: int | None = None) -> dic
         else:
             payload["status"] = "completed"
             set_preview_status(payload)
+            set_preview_exclusive(False)
 
         return payload
+    finally:
+        session.close()
+
+
+@celery_app.task(name="cleanup_orphan_previews")
+def cleanup_orphan_previews_task() -> dict:
+    if settings.storage_mode != "filesystem":
+        return {"status": "skipped", "reason": "non-filesystem mode"}
+
+    previews_root = settings.previews_root
+    session: Session = SessionLocal()
+    try:
+        expected = {
+            row[0]
+            for row in session.query(models.Preview.thumb_key)
+            .filter(models.Preview.thumb_key.isnot(None))
+            .all()
+        }
+        expected.update(
+            {
+                row[0]
+                for row in session.query(models.Preview.medium_key)
+                .filter(models.Preview.medium_key.isnot(None))
+                .all()
+            }
+        )
+
+        total_orphans = 0
+        for dirpath, _, filenames in os.walk(previews_root):
+            for name in filenames:
+                full_path = str(Path(dirpath) / name)
+                if full_path not in expected:
+                    total_orphans += 1
+
+        payload = {
+            "status": "running",
+            "total_orphans": total_orphans,
+            "deleted": 0,
+            "processed": 0,
+            "updated_at": datetime.utcnow().isoformat(),
+            "started_at": datetime.utcnow().isoformat(),
+        }
+        set_orphan_status(payload)
+
+        deleted = 0
+        processed = 0
+        for dirpath, _, filenames in os.walk(previews_root):
+            for name in filenames:
+                full_path = str(Path(dirpath) / name)
+                if full_path not in expected:
+                    try:
+                        os.remove(full_path)
+                        deleted += 1
+                    except OSError:
+                        pass
+                processed += 1
+                if processed % 500 == 0:
+                    set_orphan_status(
+                        {
+                            "status": "running",
+                            "total_orphans": total_orphans,
+                            "deleted": deleted,
+                            "processed": processed,
+                            "updated_at": datetime.utcnow().isoformat(),
+                            "started_at": payload["started_at"],
+                        }
+                    )
+
+        removed_dirs = _remove_empty_dirs(previews_root)
+        set_orphan_status(
+            {
+                "status": "completed",
+                "total_orphans": total_orphans,
+                "deleted": deleted,
+                "processed": processed,
+                "removed_dirs": removed_dirs,
+                "updated_at": datetime.utcnow().isoformat(),
+                "started_at": payload["started_at"],
+            }
+        )
+        return {
+            "status": "ok",
+            "total_orphans": total_orphans,
+            "deleted": deleted,
+            "removed_dirs": removed_dirs,
+        }
     finally:
         session.close()

@@ -104,6 +104,15 @@ def search(
         if len(filtered_items) >= limit:
             break
 
+    if not filtered_items:
+        return SearchResponse(
+            items=[],
+            next_cursor=None,
+            total=0,
+            total_all=total_all,
+            returned=0,
+        )
+
     next_cursor = None
     estimated_total = int(data.get("estimatedTotalHits", 0) or 0)
     if estimated_total > offset + limit:

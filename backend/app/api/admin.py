@@ -12,12 +12,17 @@ from app.deps import require_admin
 from app.schemas import AuditLogOut, UserCreate, UserOut, UserUpdate
 from app.security import hash_password
 from app.tasks import (
+    get_orphan_status,
     get_preview_status,
+    cancel_index_run,
+    cleanup_orphan_previews_task,
     queue_missing_metadata_task,
     queue_missing_previews_task,
     refresh_previews_cycle,
     reindex_search_task,
     scan_storage_task,
+    set_orphan_status,
+    set_preview_exclusive,
     set_preview_status,
 )
 
@@ -70,6 +75,7 @@ def refresh_previews(
     db: Session = Depends(get_db),
 ) -> dict:
     counts = _preview_counts(db)
+    set_preview_exclusive(True)
     payload = {
         "status": "running",
         "round": 1,
@@ -96,17 +102,55 @@ def refresh_previews(
 @router.get("/previews/status")
 def previews_status(_: models.User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     status = get_preview_status()
-    if status:
-        return status
     counts = _preview_counts(db)
     return {
-        "status": "idle",
-        "round": 0,
-        "max_rounds": settings.preview_check_rounds,
+        "status": (status or {}).get("status", "idle"),
+        "round": (status or {}).get("round", 0),
+        "max_rounds": (status or {}).get("max_rounds", settings.preview_check_rounds),
         "total_files": counts["total_files"],
         "total_previews": counts["total_previews"],
         "missing_previews": counts["missing_previews"],
         "progress": counts["progress"],
+        "updated_at": datetime.utcnow().isoformat(),
+        "started_at": (status or {}).get("started_at"),
+    }
+
+
+@router.post("/previews/orphans/cleanup")
+def cleanup_orphans(
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    payload = {
+        "status": "queued",
+        "total_orphans": 0,
+        "deleted": 0,
+        "processed": 0,
+        "updated_at": datetime.utcnow().isoformat(),
+        "started_at": datetime.utcnow().isoformat(),
+    }
+    set_orphan_status(payload)
+    cleanup_orphan_previews_task.delay()
+    log_action(
+        db,
+        user_id=admin.id,
+        action=models.AuditAction.reindex,
+        meta={"action": "cleanup_orphan_previews"},
+    )
+    db.commit()
+    return {"status": "queued"}
+
+
+@router.get("/previews/orphans/status")
+def orphan_status(_: models.User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    status = get_orphan_status()
+    if status:
+        return status
+    return {
+        "status": "idle",
+        "total_orphans": 0,
+        "deleted": 0,
+        "processed": 0,
         "updated_at": datetime.utcnow().isoformat(),
     }
 
@@ -132,6 +176,26 @@ def index_status(_: models.User = Depends(require_admin), db: Session = Depends(
             "error": last_run.error,
         }
     return {"files": files_count, "run": run_payload}
+
+
+@router.post("/index/cancel")
+def cancel_index(_: models.User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    last_run = (
+        db.query(models.IndexRun)
+        .order_by(models.IndexRun.started_at.desc())
+        .first()
+    )
+    if not last_run or last_run.status != models.IndexRunStatus.running:
+        raise HTTPException(status_code=400, detail="No running index")
+    cancel_index_run.delay(last_run.id)
+    log_action(
+        db,
+        user_id=_.id,
+        action=models.AuditAction.reindex,
+        meta={"action": "cancel_index", "run_id": last_run.id},
+    )
+    db.commit()
+    return {"status": "cancel_requested", "run_id": last_run.id}
 
 
 @router.get("/users", response_model=list[UserOut])

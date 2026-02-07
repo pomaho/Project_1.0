@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     reindex_delay_seconds: int = 120
     preview_check_rounds: int = 3
     preview_check_interval_seconds: int = 60
+    preview_exclusive_retry_seconds: int = 120
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

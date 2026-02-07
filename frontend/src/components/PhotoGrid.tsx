@@ -4,6 +4,7 @@ import { Box, IconButton } from "@mui/material";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import type { SearchItem } from "../api/search";
 import { withAccessToken } from "../api/client";
+import { useState } from "react";
 
 const TILE_WIDTH = 220;
 const TILE_HEIGHT = 180;
@@ -19,6 +20,8 @@ export default function PhotoGrid({
   onSelect: (item: SearchItem) => void;
   onDownload: (item: SearchItem) => void;
 }) {
+  const [refreshTokens, setRefreshTokens] = useState<Record<string, number>>({});
+
   return (
     <AutoSizer disableHeight={false}>
       {({ height, width }) => {
@@ -65,7 +68,9 @@ export default function PhotoGrid({
                     onClick={() => onSelect(item)}
                   >
                     <img
-                      src={withAccessToken(item.thumb_url)}
+                      src={`${withAccessToken(item.thumb_url)}${
+                        refreshTokens[item.id] ? `&r=${refreshTokens[item.id]}` : ""
+                      }`}
                       alt={item.keywords.join(", ")}
                       loading="lazy"
                       style={{
@@ -74,6 +79,14 @@ export default function PhotoGrid({
                         objectFit: "contain",
                         backgroundColor: "#101114",
                         cursor: "pointer",
+                      }}
+                      onError={() => {
+                        window.setTimeout(() => {
+                          setRefreshTokens((prev) => ({
+                            ...prev,
+                            [item.id]: Date.now(),
+                          }));
+                        }, 2000);
                       }}
                     />
                     <IconButton

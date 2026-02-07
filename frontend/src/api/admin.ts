@@ -81,6 +81,12 @@ export async function indexStatus(): Promise<{ files: number; run?: IndexRunStat
   return apiFetch<{ files: number; run?: IndexRunStatus | null }>("/admin/index/status");
 }
 
+export async function cancelIndex(): Promise<{ status: string; run_id?: string }> {
+  return apiFetch<{ status: string; run_id?: string }>("/admin/index/cancel", {
+    method: "POST",
+  });
+}
+
 export type PreviewStatus = {
   status: string;
   round: number;
@@ -93,6 +99,15 @@ export type PreviewStatus = {
   started_at?: string;
 };
 
+export type OrphanPreviewStatus = {
+  status: string;
+  total_orphans: number;
+  deleted: number;
+  processed: number;
+  updated_at: string;
+  started_at?: string;
+};
+
 export async function refreshPreviews(): Promise<{ status: string }> {
   return apiFetch<{ status: string }>("/admin/previews/refresh", {
     method: "POST",
@@ -101,4 +116,14 @@ export async function refreshPreviews(): Promise<{ status: string }> {
 
 export async function previewStatus(): Promise<PreviewStatus> {
   return apiFetch<PreviewStatus>("/admin/previews/status");
+}
+
+export async function cleanupOrphanPreviews(): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>("/admin/previews/orphans/cleanup", {
+    method: "POST",
+  });
+}
+
+export async function orphanPreviewStatus(): Promise<OrphanPreviewStatus> {
+  return apiFetch<OrphanPreviewStatus>("/admin/previews/orphans/status");
 }

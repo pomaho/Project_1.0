@@ -14,9 +14,10 @@ except Exception:  # pragma: no cover - fallback if vips missing
 
 PreviewSize = Literal["thumb", "medium"]
 
+# Use a single 800px preview for all sizes to speed up generation.
 SIZE_MAP: dict[PreviewSize, int] = {
-    "thumb": 320,
-    "medium": 1024,
+    "thumb": 800,
+    "medium": 800,
 }
 
 
@@ -55,7 +56,8 @@ def generate_preview(image_path: str, size: PreviewSize) -> bytes:
 
 
 def preview_path(root: str, file_id: str, size: PreviewSize) -> Path:
-    return Path(root) / file_id / f"{size}.webp"
+    # All sizes resolve to the same file.
+    return Path(root) / file_id / "preview.webp"
 
 
 def write_preview(root: str, file_id: str, size: PreviewSize, data: bytes) -> str:
