@@ -59,6 +59,7 @@ class SearchResponse(BaseModel):
     total: Optional[int] = None
     total_all: Optional[int] = None
     returned: Optional[int] = None
+    job_id: Optional[str] = None
 
 
 class FileDetail(BaseModel):

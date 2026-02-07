@@ -13,9 +13,20 @@ import {
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
-import { searchPhotos, suggestKeywords } from "../api/search";
+import {
+  type InfiniteData,
+  type QueryFunctionContext,
+  useInfiniteQuery,
+  useQuery,
+} from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  asyncSearchPage,
+  asyncSearchStatus,
+  startAsyncSearch,
+  suggestKeywords,
+  type AsyncSearchResponse,
+} from "../api/search";
 import { getDownloadToken } from "../api/files";
 import useDebounce from "../hooks/useDebounce";
 import PhotoGrid from "../components/PhotoGrid";
@@ -31,13 +42,42 @@ export default function GalleryPage() {
   const pageSize = 60;
   const { logout } = useAuth();
 
-  const searchQuery = useInfiniteQuery({
+  const [searchJobId, setSearchJobId] = useState<string | null>(null);
+  const [pollStatus, setPollStatus] = useState(true);
+  useEffect(() => {
+    setSearchJobId(null);
+    setPollStatus(true);
+  }, [debounced]);
+
+  type PageParam = { offset: number; jobId?: string };
+  type SearchPage = AsyncSearchResponse;
+
+  const searchQuery = useInfiniteQuery<SearchPage, Error, InfiniteData<SearchPage>, string[], PageParam>({
     queryKey: ["search", debounced],
-    queryFn: ({ pageParam = 0 }) =>
-      searchPhotos(debounced, pageParam as number, pageSize),
-    getNextPageParam: (lastPage) =>
-      lastPage.next_cursor ? Number(lastPage.next_cursor) : undefined,
-    initialPageParam: 0,
+    queryFn: async ({ pageParam = { offset: 0 } }: QueryFunctionContext<
+      string[],
+      PageParam
+    >) => {
+      const { offset, jobId } = pageParam;
+      if (!jobId) {
+        const initial = await startAsyncSearch(debounced, pageSize);
+        const newJobId = initial.job_id ?? undefined;
+        setSearchJobId(newJobId ?? null);
+        return { ...initial, job_id: newJobId };
+      }
+      return asyncSearchPage(jobId, offset, pageSize);
+    },
+    getNextPageParam: (lastPage) => {
+      if (!lastPage.next_cursor) {
+        return undefined;
+      }
+      return {
+        offset: Number(lastPage.next_cursor),
+        jobId: lastPage.job_id ?? searchJobId ?? undefined,
+      };
+    },
+    initialPageParam: { offset: 0 },
+    enabled: true,
   });
 
   const suggestionsQuery = useQuery({
@@ -54,6 +94,38 @@ export default function GalleryPage() {
   const totalFound = totals?.total ?? items.length;
   const totalAll = totals?.total_all ?? items.length;
   const totalShown = items.length;
+
+  const statusQuery = useQuery({
+    queryKey: ["search-status", searchJobId],
+    queryFn: () => asyncSearchStatus(searchJobId as string),
+    enabled: Boolean(searchJobId) && pollStatus,
+    refetchInterval: 2000,
+  });
+
+  const [liveTotalFound, setLiveTotalFound] = useState<number>(totalFound);
+  const lastTotalRef = useRef<number | null>(null);
+  useEffect(() => {
+    const nextTotal = statusQuery.data?.total_found;
+    if (typeof nextTotal !== "number") {
+      return;
+    }
+    if (lastTotalRef.current === nextTotal) {
+      return;
+    }
+    lastTotalRef.current = nextTotal;
+    setLiveTotalFound(nextTotal);
+  }, [statusQuery.data?.total_found]);
+
+  useEffect(() => {
+    setLiveTotalFound(totalFound);
+    lastTotalRef.current = totalFound;
+  }, [debounced, totalFound]);
+
+  useEffect(() => {
+    if (statusQuery.data?.status === "completed") {
+      setPollStatus(false);
+    }
+  }, [statusQuery.data?.status]);
 
   return (
     <Box sx={{ minHeight: "100vh", backgroundColor: "#f7f1ea" }}>
@@ -127,7 +199,7 @@ export default function GalleryPage() {
           Найти
         </Button>
         <Typography variant="body2" sx={{ mb: 2, color: "text.secondary" }}>
-          Найдено: {totalFound} • Всего: {totalAll} • Показано: {totalShown}
+          Найдено: {liveTotalFound} • Всего: {totalAll} • Показано: {totalShown}
         </Typography>
         <Box sx={{ height: "calc(100% - 96px)" }}>
           <PhotoGrid

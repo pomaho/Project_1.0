@@ -15,7 +15,7 @@ from app.db import SessionLocal
 from app.keywords import normalize_keyword
 from app.metadata import extract_metadata
 from app.previews import generate_preview, write_preview
-from app.search_client import ensure_index, get_client, upsert_documents
+from app.search_client import ensure_index, get_client, search_documents, upsert_documents
 from app.search_index import build_doc, remove_file, upsert_file
 from app.redis_client import get_redis
 
@@ -27,6 +27,9 @@ ORPHAN_STATUS_KEY = "preview:orphans:status"
 REINDEX_STATUS_KEY = "search:reindex:status"
 REINDEX_WAIT_KEY = "search:reindex:wait"
 INDEX_CANCEL_PREFIX = "index:cancel"
+ASYNC_PREFIX = "search:async"
+ASYNC_RESULTS_TTL_SECONDS = 3600
+ASYNC_CHUNK_SIZE = 1000
 
 
 def _normalize_path(path: str) -> str:
@@ -729,6 +732,113 @@ def _remove_empty_dirs(root: str) -> int:
     return removed
 
 
+def _async_meta_key(job_id: str) -> str:
+    return f"{ASYNC_PREFIX}:{job_id}:meta"
+
+
+def _async_list_key(job_id: str) -> str:
+    return f"{ASYNC_PREFIX}:{job_id}:list"
+
+
+def _async_seen_key(job_id: str) -> str:
+    return f"{ASYNC_PREFIX}:{job_id}:seen"
+
+
+@celery_app.task(name="async_search")
+def async_search_task(job_id: str) -> dict:
+    client = get_redis()
+    meta = client.hgetall(_async_meta_key(job_id))
+    if not meta:
+        return {"status": "missing"}
+    query = meta.get("query", "")
+    query_text = meta.get("query_text", "")
+    if not query.strip():
+        return {"status": "skipped"}
+
+    session: Session = SessionLocal()
+    try:
+        total_found = int(meta.get("total_found") or 0)
+        scan_offset = int(meta.get("next_offset") or 0)
+        with get_client() as search_client:
+            while True:
+                payload = {
+                    "q": query_text,
+                    "limit": ASYNC_CHUNK_SIZE,
+                    "offset": scan_offset,
+                }
+                data = search_documents(search_client, payload)
+                hits = data.get("hits", [])
+                if not hits:
+                    break
+                ids = [hit.get("id") for hit in hits if hit.get("id")]
+                file_map = {}
+                if ids:
+                    files = (
+                        session.query(models.File)
+                        .filter(models.File.id.in_(ids), models.File.deleted_at.is_(None))
+                        .all()
+                    )
+                    file_map = {file_row.id: file_row for file_row in files}
+
+                new_ids: list[str] = []
+                for hit in hits:
+                    file_id = hit.get("id")
+                    file_row = file_map.get(file_id)
+                    if not file_row:
+                        continue
+                    if client.sismember(_async_seen_key(job_id), file_id):
+                        continue
+                    new_ids.append(file_id)
+
+                if new_ids:
+                    pipe = client.pipeline()
+                    for file_id in new_ids:
+                        pipe.rpush(_async_list_key(job_id), file_id)
+                        pipe.sadd(_async_seen_key(job_id), file_id)
+                    pipe.execute()
+                    total_found += len(new_ids)
+
+                scan_offset += len(hits)
+                estimated_total = int(
+                    data.get("estimatedTotalHits")
+                    or data.get("totalHits")
+                    or data.get("nbHits")
+                    or 0
+                )
+                client.hset(
+                    _async_meta_key(job_id),
+                    mapping={
+                        "status": "running",
+                        "total_found": str(total_found),
+                        "scanned": str(scan_offset),
+                        "next_offset": str(scan_offset),
+                        "updated_at": datetime.utcnow().isoformat(),
+                    },
+                )
+                client.expire(_async_meta_key(job_id), ASYNC_RESULTS_TTL_SECONDS)
+                client.expire(_async_list_key(job_id), ASYNC_RESULTS_TTL_SECONDS)
+                client.expire(_async_seen_key(job_id), ASYNC_RESULTS_TTL_SECONDS)
+
+                if estimated_total and scan_offset >= estimated_total:
+                    break
+                if len(hits) < ASYNC_CHUNK_SIZE:
+                    break
+
+        client.hset(
+            _async_meta_key(job_id),
+            mapping={
+                "status": "completed",
+                "total_found": str(total_found),
+                "scanned": str(scan_offset),
+                "next_offset": str(scan_offset),
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+        )
+        return {"status": "ok", "total_found": total_found}
+    finally:
+        session.close()
+
+
 @celery_app.task(name="refresh_previews_cycle")
 def refresh_previews_cycle(round_num: int, max_rounds: int | None = None) -> dict:
     session: Session = SessionLocal()
@@ -850,4 +960,3 @@ def cleanup_orphan_previews_task() -> dict:
         }
     finally:
         session.close()
-

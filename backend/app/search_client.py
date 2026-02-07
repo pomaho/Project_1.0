@@ -35,7 +35,7 @@ def ensure_index(client: httpx.Client) -> None:
             "deleted",
         ],
         "sortableAttributes": ["shot_at", "mtime"],
-        "pagination": {"maxTotalHits": 10000},
+        "pagination": {"maxTotalHits": settings.meili_max_total_hits},
     }
     client.patch(f"/indexes/{MEILI_INDEX}/settings", json=settings_payload)
 
