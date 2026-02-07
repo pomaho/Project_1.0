@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -15,12 +16,23 @@ from app.keywords import normalize_keyword
 from app.metadata import extract_metadata
 from app.previews import generate_preview, write_preview
 from app.search_index import remove_file, upsert_file
+from app.redis_client import get_redis
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
+PREVIEW_STATUS_KEY = "preview:refresh:status"
+
 
 def _normalize_path(path: str) -> str:
-    return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    # Normalize Windows-style paths inside Linux containers:
+    # - unify separators to "/"
+    # - collapse duplicate slashes
+    # - lowercase for case-insensitive compare
+    normalized = path.replace("\\", "/").strip()
+
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    return normalized.lower().rstrip("/")
 
 
 def _is_excluded(path: str, excluded: list[str]) -> bool:
@@ -31,7 +43,7 @@ def _is_excluded(path: str, excluded: list[str]) -> bool:
         if not item:
             continue
         target = _normalize_path(item)
-        if normalized == target or normalized.startswith(target + os.sep):
+        if normalized == target or normalized.startswith(target + "/"):
             return True
     return False
 
@@ -216,6 +228,10 @@ def scan_storage_task(run_id: str | None = None) -> dict:
                 }
             )
         session.commit()
+        # Cleanup previews for deleted files after each rescan
+        gc_previews_task.delay()
+        # Ensure any missing previews are queued after each rescan
+        queue_missing_previews_task.delay()
         return {
             "status": "ok",
             "created": created,
@@ -440,5 +456,83 @@ def queue_missing_metadata_task() -> dict:
             extract_metadata_task.delay(file_id)
             queued += 1
         return {"status": "ok", "queued": queued}
+    finally:
+        session.close()
+
+
+def _compute_preview_counts(session: Session) -> dict:
+    total_files = (
+        session.query(models.File.id)
+        .filter(models.File.deleted_at.is_(None))
+        .count()
+    )
+    missing_previews = (
+        session.query(models.File.id)
+        .outerjoin(models.Preview, models.Preview.file_id == models.File.id)
+        .filter(models.File.deleted_at.is_(None), models.Preview.file_id.is_(None))
+        .count()
+    )
+    total_previews = (
+        session.query(models.Preview)
+        .join(models.File, models.File.id == models.Preview.file_id)
+        .filter(models.File.deleted_at.is_(None))
+        .count()
+    )
+    progress = 1.0 if total_files == 0 else (total_files - missing_previews) / total_files
+    return {
+        "total_files": total_files,
+        "total_previews": total_previews,
+        "missing_previews": missing_previews,
+        "progress": progress,
+    }
+
+
+def set_preview_status(payload: dict) -> None:
+    client = get_redis()
+    client.set(PREVIEW_STATUS_KEY, json.dumps(payload))
+
+
+def get_preview_status() -> dict | None:
+    client = get_redis()
+    raw = client.get(PREVIEW_STATUS_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+@celery_app.task(name="refresh_previews_cycle")
+def refresh_previews_cycle(round_num: int, max_rounds: int | None = None) -> dict:
+    session: Session = SessionLocal()
+    try:
+        max_rounds = max_rounds or settings.preview_check_rounds
+        counts = _compute_preview_counts(session)
+        payload = {
+            "status": "running" if round_num < max_rounds else "completed",
+            "round": round_num,
+            "max_rounds": max_rounds,
+            "total_files": counts["total_files"],
+            "total_previews": counts["total_previews"],
+            "missing_previews": counts["missing_previews"],
+            "progress": counts["progress"],
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        set_preview_status(payload)
+
+        if counts["missing_previews"] > 0:
+            queue_missing_previews_task.delay()
+
+        if round_num < max_rounds:
+            refresh_previews_cycle.apply_async(
+                args=[round_num + 1, max_rounds],
+                countdown=settings.preview_check_interval_seconds,
+            )
+        else:
+            payload["status"] = "completed"
+            set_preview_status(payload)
+
+        return payload
     finally:
         session.close()

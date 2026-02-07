@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     rate_limit_downloads_per_min: int = 20
     rescan_interval_minutes: int = 60
     reindex_delay_seconds: int = 120
+    preview_check_rounds: int = 3
+    preview_check_interval_seconds: int = 60
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

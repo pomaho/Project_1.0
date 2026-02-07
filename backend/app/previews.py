@@ -16,7 +16,7 @@ PreviewSize = Literal["thumb", "medium"]
 
 SIZE_MAP: dict[PreviewSize, int] = {
     "thumb": 320,
-    "medium": 1280,
+    "medium": 1024,
 }
 
 

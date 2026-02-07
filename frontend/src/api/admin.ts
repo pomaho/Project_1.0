@@ -80,3 +80,25 @@ export type IndexRunStatus = {
 export async function indexStatus(): Promise<{ files: number; run?: IndexRunStatus | null }> {
   return apiFetch<{ files: number; run?: IndexRunStatus | null }>("/admin/index/status");
 }
+
+export type PreviewStatus = {
+  status: string;
+  round: number;
+  max_rounds: number;
+  total_files: number;
+  total_previews: number;
+  missing_previews: number;
+  progress: number;
+  updated_at: string;
+  started_at?: string;
+};
+
+export async function refreshPreviews(): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>("/admin/previews/refresh", {
+    method: "POST",
+  });
+}
+
+export async function previewStatus(): Promise<PreviewStatus> {
+  return apiFetch<PreviewStatus>("/admin/previews/status");
+}

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -10,13 +12,39 @@ from app.deps import require_admin
 from app.schemas import AuditLogOut, UserCreate, UserOut, UserUpdate
 from app.security import hash_password
 from app.tasks import (
+    get_preview_status,
     queue_missing_metadata_task,
     queue_missing_previews_task,
+    refresh_previews_cycle,
     reindex_search_task,
     scan_storage_task,
+    set_preview_status,
 )
 
 router = APIRouter()
+
+
+def _preview_counts(db: Session) -> dict:
+    total_files = db.query(models.File.id).filter(models.File.deleted_at.is_(None)).count()
+    missing_previews = (
+        db.query(models.File.id)
+        .outerjoin(models.Preview, models.Preview.file_id == models.File.id)
+        .filter(models.File.deleted_at.is_(None), models.Preview.file_id.is_(None))
+        .count()
+    )
+    total_previews = (
+        db.query(models.Preview)
+        .join(models.File, models.File.id == models.Preview.file_id)
+        .filter(models.File.deleted_at.is_(None))
+        .count()
+    )
+    progress = 1.0 if total_files == 0 else (total_files - missing_previews) / total_files
+    return {
+        "total_files": total_files,
+        "total_previews": total_previews,
+        "missing_previews": missing_previews,
+        "progress": progress,
+    }
 
 
 @router.post("/index/refresh-all")
@@ -34,6 +62,53 @@ def refresh_all(
     log_action(db, user_id=admin.id, action=models.AuditAction.rescan)
     db.commit()
     return {"status": "queued", "run_id": run.id}
+
+
+@router.post("/previews/refresh")
+def refresh_previews(
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    counts = _preview_counts(db)
+    payload = {
+        "status": "running",
+        "round": 1,
+        "max_rounds": settings.preview_check_rounds,
+        "total_files": counts["total_files"],
+        "total_previews": counts["total_previews"],
+        "missing_previews": counts["missing_previews"],
+        "progress": counts["progress"],
+        "updated_at": datetime.utcnow().isoformat(),
+        "started_at": datetime.utcnow().isoformat(),
+    }
+    set_preview_status(payload)
+    refresh_previews_cycle.delay(1, settings.preview_check_rounds)
+    log_action(
+        db,
+        user_id=admin.id,
+        action=models.AuditAction.reindex,
+        meta={"action": "refresh_previews"},
+    )
+    db.commit()
+    return {"status": "queued"}
+
+
+@router.get("/previews/status")
+def previews_status(_: models.User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    status = get_preview_status()
+    if status:
+        return status
+    counts = _preview_counts(db)
+    return {
+        "status": "idle",
+        "round": 0,
+        "max_rounds": settings.preview_check_rounds,
+        "total_files": counts["total_files"],
+        "total_previews": counts["total_previews"],
+        "missing_previews": counts["missing_previews"],
+        "progress": counts["progress"],
+        "updated_at": datetime.utcnow().isoformat(),
+    }
 
 
 @router.get("/index/status")

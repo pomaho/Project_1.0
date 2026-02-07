@@ -30,6 +30,9 @@ import {
   fetchAudit,
   indexStatus,
   listUsers,
+  previewStatus,
+  PreviewStatus,
+  refreshPreviews,
   refreshAll,
   updateUser,
 } from "../api/admin";
@@ -43,20 +46,25 @@ export default function AdminPage() {
   const [status, setStatus] = useState<{ files: number; run?: IndexRunStatus | null } | null>(
     null
   );
+  const [preview, setPreview] = useState<PreviewStatus | null>(null);
   const [form, setForm] = useState({ email: "", password: "", role: "viewer" });
   const [refreshBusy, setRefreshBusy] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
 
   useEffect(() => {
     listUsers().then(setUsers).catch(() => setUsers([]));
     fetchAudit().then(setAudit).catch(() => setAudit([]));
     indexStatus().then(setStatus).catch(() => setStatus(null));
+    previewStatus().then(setPreview).catch(() => setPreview(null));
     const interval = window.setInterval(() => {
       indexStatus().then(setStatus).catch(() => setStatus(null));
+      previewStatus().then(setPreview).catch(() => setPreview(null));
     }, 5000);
     return () => window.clearInterval(interval);
   }, []);
 
   const run = status?.run ?? null;
+  const previewProgress = Math.round(((preview?.progress ?? 0) * 100) || 0);
 
   const handleCreateUser = async () => {
     const payload = { ...form };
@@ -142,6 +150,39 @@ export default function AdminPage() {
             )}
           </Box>
         )}
+      </Paper>
+      <Paper sx={{ p: 2, mb: 3 }}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">
+          <Typography variant="body1">
+            Превью: {preview?.total_previews ?? "—"} • Файлов: {preview?.total_files ?? "—"} •
+            Без превью: {preview?.missing_previews ?? "—"}
+          </Typography>
+          <Button
+            variant="outlined"
+            onClick={async () => {
+              setPreviewBusy(true);
+              try {
+                await refreshPreviews();
+              } finally {
+                setPreviewBusy(false);
+              }
+            }}
+            disabled={previewBusy}
+          >
+            Обновить превью
+          </Button>
+        </Stack>
+        <Box sx={{ mt: 2 }}>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Прогресс: {previewProgress}% • Раунд {preview?.round ?? 0} из{" "}
+            {preview?.max_rounds ?? 0} • Статус: {preview?.status ?? "—"}
+          </Typography>
+          <LinearProgress
+            variant="determinate"
+            value={previewProgress}
+            sx={{ height: 8, borderRadius: 999 }}
+          />
+        </Box>
       </Paper>
       <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ mb: 2 }}>
         <Tab label="Пользователи" />
