@@ -24,8 +24,10 @@ import { useAuth } from "../auth";
 
 export default function GalleryPage() {
   const [query, setQuery] = useState("");
+  const [submittedQuery, setSubmittedQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const debounced = useDebounce(query, 300);
+  const debounced = useDebounce(submittedQuery, 300);
+  const debouncedInput = useDebounce(query, 300);
   const pageSize = 60;
   const { logout } = useAuth();
 
@@ -39,9 +41,9 @@ export default function GalleryPage() {
   });
 
   const suggestionsQuery = useQuery({
-    queryKey: ["suggest", debounced],
-    queryFn: () => suggestKeywords(debounced),
-    enabled: debounced.length > 0,
+    queryKey: ["suggest", debouncedInput],
+    queryFn: () => suggestKeywords(debouncedInput),
+    enabled: debouncedInput.length > 0,
   });
 
   const items = useMemo(
@@ -90,6 +92,12 @@ export default function GalleryPage() {
             <TextField
               {...params}
               fullWidth
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  setSubmittedQuery(query.trim());
+                }
+              }}
               placeholder='Поиск: "red dress" wedding OR studio -outdoor'
               InputProps={{
                 ...params.InputProps,
@@ -111,6 +119,13 @@ export default function GalleryPage() {
             />
           )}
         />
+        <Button
+          variant="contained"
+          onClick={() => setSubmittedQuery(query.trim())}
+          sx={{ mb: 3 }}
+        >
+          Найти
+        </Button>
         <Typography variant="body2" sx={{ mb: 2, color: "text.secondary" }}>
           Найдено: {totalFound} • Всего: {totalAll} • Показано: {totalShown}
         </Typography>

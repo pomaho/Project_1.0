@@ -20,7 +20,7 @@ export type SearchResponse = {
 export async function searchPhotos(
   query: string,
   offset: number,
-  limit = 60
+  limit = 10000
 ): Promise<SearchResponse> {
   const params = new URLSearchParams({
     q: query,

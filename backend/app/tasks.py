@@ -25,6 +25,7 @@ PREVIEW_STATUS_KEY = "preview:refresh:status"
 PREVIEW_EXCLUSIVE_KEY = "preview:exclusive"
 ORPHAN_STATUS_KEY = "preview:orphans:status"
 REINDEX_STATUS_KEY = "search:reindex:status"
+REINDEX_WAIT_KEY = "search:reindex:wait"
 INDEX_CANCEL_PREFIX = "index:cancel"
 
 
@@ -104,6 +105,20 @@ def _reindex_incr_completed(count: int) -> None:
         }
     )
     set_reindex_status(status)
+
+
+def _count_missing_metadata(session: Session) -> int:
+    return (
+        session.query(models.File.id)
+        .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+        .filter(
+            models.File.deleted_at.is_(None),
+            (models.FileKeyword.file_id.is_(None))
+            | (models.File.title.is_(None))
+            | (models.File.description.is_(None)),
+        )
+        .count()
+    )
 
 
 def _is_cancelled(run_id: str) -> bool:
@@ -627,6 +642,30 @@ def queue_missing_metadata_task() -> dict:
         session.close()
 
 
+@celery_app.task(name="reindex_after_metadata")
+def reindex_after_metadata_task(run_id: str | None = None) -> dict:
+    client = get_redis()
+    current = client.get(REINDEX_WAIT_KEY)
+    if current and run_id and current != run_id:
+        return {"status": "skipped", "reason": "superseded"}
+
+    session: Session = SessionLocal()
+    try:
+        missing = _count_missing_metadata(session)
+        if missing > 0:
+            reindex_after_metadata_task.apply_async(
+                args=[run_id],
+                countdown=settings.reindex_wait_interval_seconds,
+            )
+            return {"status": "waiting", "missing": missing}
+        reindex_search_task.delay()
+        if run_id:
+            client.delete(REINDEX_WAIT_KEY)
+        return {"status": "queued"}
+    finally:
+        session.close()
+
+
 @celery_app.task(name="cancel_index_run")
 def cancel_index_run(run_id: str) -> dict:
     _set_cancelled(run_id)
@@ -811,3 +850,4 @@ def cleanup_orphan_previews_task() -> dict:
         }
     finally:
         session.close()
+

@@ -15,6 +15,7 @@ from app.tasks import (
     get_orphan_status,
     get_preview_status,
     get_reindex_status,
+    reindex_after_metadata_task,
     cancel_index_run,
     cleanup_orphan_previews_task,
     queue_missing_metadata_task,
@@ -65,7 +66,15 @@ def refresh_all(
     scan_storage_task.delay(run.id)
     queue_missing_metadata_task.delay()
     queue_missing_previews_task.delay()
-    reindex_search_task.apply_async(countdown=settings.reindex_delay_seconds)
+    set_reindex_status(
+        {
+            "status": "waiting_metadata",
+            "count": 0,
+            "updated_at": datetime.utcnow().isoformat(),
+            "started_at": datetime.utcnow().isoformat(),
+        }
+    )
+    reindex_after_metadata_task.delay(run.id)
     log_action(db, user_id=admin.id, action=models.AuditAction.rescan)
     db.commit()
     return {"status": "queued", "run_id": run.id}
