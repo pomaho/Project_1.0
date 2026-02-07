@@ -64,6 +64,23 @@ export async function refreshAll(): Promise<{ status: string; run_id?: string }>
   });
 }
 
+export async function reindexSearch(): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>("/admin/index/reindex", {
+    method: "POST",
+  });
+}
+
+export type ReindexStatus = {
+  status: string;
+  count: number;
+  updated_at: string;
+  started_at?: string;
+};
+
+export async function reindexStatus(): Promise<ReindexStatus> {
+  return apiFetch<ReindexStatus>("/admin/index/reindex/status");
+}
+
 export type IndexRunStatus = {
   id: string;
   status: string;

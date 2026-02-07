@@ -115,8 +115,11 @@ def search(
 
     next_cursor = None
     estimated_total = int(data.get("estimatedTotalHits", 0) or 0)
-    if estimated_total > offset + limit:
-        next_cursor = str(offset + limit)
+    if len(filtered_items) == len(hits):
+        if estimated_total > offset + limit:
+            next_cursor = str(offset + limit)
+    else:
+        estimated_total = offset + len(filtered_items)
     log_action(
         db,
         user_id=_.id,

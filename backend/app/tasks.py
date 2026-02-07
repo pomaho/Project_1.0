@@ -15,7 +15,8 @@ from app.db import SessionLocal
 from app.keywords import normalize_keyword
 from app.metadata import extract_metadata
 from app.previews import generate_preview, write_preview
-from app.search_index import remove_file, upsert_file
+from app.search_client import ensure_index, get_client, upsert_documents
+from app.search_index import build_doc, remove_file, upsert_file
 from app.redis_client import get_redis
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
@@ -23,6 +24,7 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 PREVIEW_STATUS_KEY = "preview:refresh:status"
 PREVIEW_EXCLUSIVE_KEY = "preview:exclusive"
 ORPHAN_STATUS_KEY = "preview:orphans:status"
+REINDEX_STATUS_KEY = "search:reindex:status"
 INDEX_CANCEL_PREFIX = "index:cancel"
 
 
@@ -69,6 +71,39 @@ def get_orphan_status() -> dict | None:
         return json.loads(raw)
     except json.JSONDecodeError:
         return None
+
+
+def set_reindex_status(payload: dict) -> None:
+    client = get_redis()
+    client.set(REINDEX_STATUS_KEY, json.dumps(payload))
+
+
+def get_reindex_status() -> dict | None:
+    client = get_redis()
+    raw = client.get(REINDEX_STATUS_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _reindex_incr_completed(count: int) -> None:
+    client = get_redis()
+    client.incrby(f"{REINDEX_STATUS_KEY}:completed", count)
+    completed_raw = client.get(f"{REINDEX_STATUS_KEY}:completed")
+    completed = int(completed_raw or 0)
+    status = get_reindex_status() or {}
+    status.update(
+        {
+            "status": "running",
+            "completed": completed,
+            "count": completed,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+    )
+    set_reindex_status(status)
 
 
 def _is_cancelled(run_id: str) -> bool:
@@ -439,13 +474,70 @@ def remove_search_doc_task(file_id: str) -> dict:
 def reindex_search_task() -> dict:
     session: Session = SessionLocal()
     try:
-        ids = [
-            row.id
-            for row in session.query(models.File.id).filter(models.File.deleted_at.is_(None))
-        ]
-        for file_id in ids:
-            upsert_file(session, file_id)
-        return {"status": "ok", "count": len(ids)}
+        started_at = datetime.utcnow().isoformat()
+        total = (
+            session.query(models.File.id)
+            .filter(models.File.deleted_at.is_(None))
+            .count()
+        )
+        client = get_redis()
+        client.set(f"{REINDEX_STATUS_KEY}:completed", 0)
+        set_reindex_status(
+            {
+                "status": "running",
+                "count": 0,
+                "completed": 0,
+                "total": total,
+                "updated_at": started_at,
+                "started_at": started_at,
+            }
+        )
+        chunk: list[str] = []
+        for (file_id,) in (
+            session.query(models.File.id)
+            .filter(models.File.deleted_at.is_(None))
+            .yield_per(2000)
+        ):
+            chunk.append(file_id)
+            if len(chunk) >= 2000:
+                reindex_search_chunk.delay(chunk)
+                chunk = []
+        if chunk:
+            reindex_search_chunk.delay(chunk)
+        return {"status": "queued", "total": total}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="reindex_search_chunk")
+def reindex_search_chunk(file_ids: list[str]) -> dict:
+    if not file_ids:
+        return {"status": "skipped"}
+    session: Session = SessionLocal()
+    try:
+        rows = (
+            session.query(models.File)
+            .filter(models.File.id.in_(file_ids), models.File.deleted_at.is_(None))
+            .all()
+        )
+        docs = [build_doc(row) for row in rows]
+        with get_client() as client:
+            ensure_index(client)
+            if docs:
+                upsert_documents(client, docs)
+        _reindex_incr_completed(len(docs))
+        status = get_reindex_status() or {}
+        total = int(status.get("total") or 0)
+        completed = int(status.get("completed") or 0)
+        if total and completed >= total:
+            set_reindex_status(
+                {
+                    **status,
+                    "status": "completed",
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+            )
+        return {"status": "ok", "count": len(docs)}
     finally:
         session.close()
 

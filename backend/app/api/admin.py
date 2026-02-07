@@ -14,6 +14,7 @@ from app.security import hash_password
 from app.tasks import (
     get_orphan_status,
     get_preview_status,
+    get_reindex_status,
     cancel_index_run,
     cleanup_orphan_previews_task,
     queue_missing_metadata_task,
@@ -24,6 +25,7 @@ from app.tasks import (
     set_orphan_status,
     set_preview_exclusive,
     set_preview_status,
+    set_reindex_status,
 )
 
 router = APIRouter()
@@ -67,6 +69,42 @@ def refresh_all(
     log_action(db, user_id=admin.id, action=models.AuditAction.rescan)
     db.commit()
     return {"status": "queued", "run_id": run.id}
+
+
+@router.post("/index/reindex")
+def reindex_only(
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    set_reindex_status(
+        {
+            "status": "queued",
+            "count": 0,
+            "updated_at": datetime.utcnow().isoformat(),
+            "started_at": datetime.utcnow().isoformat(),
+        }
+    )
+    reindex_search_task.delay()
+    log_action(
+        db,
+        user_id=admin.id,
+        action=models.AuditAction.reindex,
+        meta={"action": "reindex_search"},
+    )
+    db.commit()
+    return {"status": "queued"}
+
+
+@router.get("/index/reindex/status")
+def reindex_status(_: models.User = Depends(require_admin)) -> dict:
+    status = get_reindex_status()
+    if status:
+        return status
+    return {
+        "status": "idle",
+        "count": 0,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
 
 
 @router.post("/previews/refresh")

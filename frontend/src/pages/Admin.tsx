@@ -36,6 +36,9 @@ import {
   orphanPreviewStatus,
   previewStatus,
   PreviewStatus,
+  ReindexStatus,
+  reindexStatus,
+  reindexSearch,
   refreshPreviews,
   refreshAll,
   updateUser,
@@ -52,8 +55,10 @@ export default function AdminPage() {
   );
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
   const [orphans, setOrphans] = useState<OrphanPreviewStatus | null>(null);
+  const [reindex, setReindex] = useState<ReindexStatus | null>(null);
   const [form, setForm] = useState({ email: "", password: "", role: "viewer" });
   const [refreshBusy, setRefreshBusy] = useState(false);
+  const [reindexBusy, setReindexBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [orphanBusy, setOrphanBusy] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
@@ -64,11 +69,14 @@ export default function AdminPage() {
     indexStatus().then(setStatus).catch(() => setStatus(null));
     previewStatus().then(setPreview).catch(() => setPreview(null));
     orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
+    reindexStatus().then(setReindex).catch(() => setReindex(null));
     const interval = window.setInterval(() => {
+      if (document.hidden) return;
       indexStatus().then(setStatus).catch(() => setStatus(null));
       previewStatus().then(setPreview).catch(() => setPreview(null));
       orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
-    }, 5000);
+      reindexStatus().then(setReindex).catch(() => setReindex(null));
+    }, 15000);
     return () => window.clearInterval(interval);
   }, []);
 
@@ -138,6 +146,20 @@ export default function AdminPage() {
           </Button>
           <Button
             variant="outlined"
+            onClick={async () => {
+              setReindexBusy(true);
+              try {
+                await reindexSearch();
+              } finally {
+                setReindexBusy(false);
+              }
+            }}
+            disabled={reindexBusy}
+          >
+            Переиндексировать поиск
+          </Button>
+          <Button
+            variant="outlined"
             color="warning"
             onClick={async () => {
               setCancelBusy(true);
@@ -152,6 +174,11 @@ export default function AdminPage() {
             Остановить скан
           </Button>
         </Stack>
+        <Box sx={{ mt: 2 }}>
+          <Typography variant="body2">
+            Реиндекс: {reindex?.status ?? "—"} • Обработано: {reindex?.count ?? "—"}
+          </Typography>
+        </Box>
         {run && (
           <Box sx={{ mt: 2 }}>
             <Typography variant="body2" sx={{ mb: 1 }}>
