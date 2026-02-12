@@ -18,6 +18,7 @@ from app.tasks import (
     reindex_after_metadata_task,
     cancel_index_run,
     cleanup_orphan_previews_task,
+    cancel_preview_tasks,
     queue_missing_metadata_task,
     queue_missing_previews_task,
     refresh_previews_cycle,
@@ -65,7 +66,6 @@ def refresh_all(
     db.commit()
     scan_storage_task.delay(run.id)
     queue_missing_metadata_task.delay()
-    queue_missing_previews_task.delay()
     set_reindex_status(
         {
             "status": "waiting_metadata",
@@ -122,7 +122,6 @@ def refresh_previews(
     db: Session = Depends(get_db),
 ) -> dict:
     counts = _preview_counts(db)
-    set_preview_exclusive(True)
     payload = {
         "status": "running",
         "round": 1,
@@ -135,7 +134,8 @@ def refresh_previews(
         "started_at": datetime.utcnow().isoformat(),
     }
     set_preview_status(payload)
-    refresh_previews_cycle.delay(1, settings.preview_check_rounds)
+    queue_missing_previews_task.delay()
+    set_preview_exclusive(False)
     log_action(
         db,
         user_id=admin.id,
@@ -144,6 +144,36 @@ def refresh_previews(
     )
     db.commit()
     return {"status": "queued"}
+
+
+@router.post("/previews/restart")
+def restart_previews(
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    counts = _preview_counts(db)
+    cancelled = cancel_preview_tasks()
+    payload = {
+        "status": "running",
+        "round": 1,
+        "max_rounds": settings.preview_check_rounds,
+        "total_files": counts["total_files"],
+        "total_previews": counts["total_previews"],
+        "missing_previews": counts["missing_previews"],
+        "progress": counts["progress"],
+        "updated_at": datetime.utcnow().isoformat(),
+        "started_at": datetime.utcnow().isoformat(),
+    }
+    set_preview_status(payload)
+    queue_missing_previews_task.delay()
+    log_action(
+        db,
+        user_id=admin.id,
+        action=models.AuditAction.reindex,
+        meta={"action": "restart_previews", **cancelled},
+    )
+    db.commit()
+    return {"status": "queued", **cancelled}
 
 
 @router.get("/previews/status")

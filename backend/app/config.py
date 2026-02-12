@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     meili_url: str = "http://meili:7700"
     meili_key: str | None = None
-    meili_max_total_hits: int = 1000000
+    meili_max_total_hits: int = 10000
 
     jwt_secret: str = "change-me"
     jwt_access_ttl: str = "15m"

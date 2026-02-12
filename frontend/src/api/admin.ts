@@ -131,6 +131,12 @@ export async function refreshPreviews(): Promise<{ status: string }> {
   });
 }
 
+export async function restartPreviews(): Promise<{ status: string; revoked?: number }> {
+  return apiFetch<{ status: string; revoked?: number }>("/admin/previews/restart", {
+    method: "POST",
+  });
+}
+
 export async function previewStatus(): Promise<PreviewStatus> {
   return apiFetch<PreviewStatus>("/admin/previews/status");
 }

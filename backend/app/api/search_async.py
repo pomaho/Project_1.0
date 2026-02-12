@@ -102,7 +102,8 @@ def start_async_search(
         )
 
     job_id = str(uuid.uuid4())
-    query_text = q.strip()
+    query_terms = [part.strip().lower() for part in q.split() if part.strip()]
+    query_text = " ".join(query_terms)
 
     initial_ids: list[str] = []
     scan_offset = 0
@@ -114,6 +115,10 @@ def start_async_search(
                 "limit": CHUNK_SIZE,
                 "offset": scan_offset,
             }
+            if query_terms:
+                payload["filter"] = " AND ".join(
+                    f"keywords_norm = \"{term}\"" for term in query_terms
+                )
             data = search_documents(client, payload)
             hits = data.get("hits", [])
             if not hits:

@@ -50,14 +50,17 @@ def search(
             returned=len(items),
         )
 
-    query_text = q.strip()
+    query_terms = [part.strip().lower() for part in q.split() if part.strip()]
+    query_text = " ".join(query_terms)
 
-    max_fetch = min(max(limit * 3, 500), 10000)
+    max_fetch = min(max(limit * 3, 500), 100000)
     payload = {
         "q": query_text,
         "limit": max_fetch,
         "offset": offset,
     }
+    if query_terms:
+        payload["filter"] = " AND ".join(f"keywords_norm = \"{term}\"" for term in query_terms)
 
     with get_client() as client:
         data = search_documents(client, payload)

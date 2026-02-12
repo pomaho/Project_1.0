@@ -34,7 +34,7 @@ export type AsyncSearchResponse = SearchResponse & { job_id?: string };
 
 export async function startAsyncSearch(
   query: string,
-  limit = 60
+  limit = 200
 ): Promise<AsyncSearchResponse> {
   const params = new URLSearchParams({
     q: query,
@@ -48,7 +48,7 @@ export async function startAsyncSearch(
 export async function asyncSearchPage(
   jobId: string,
   offset: number,
-  limit = 60
+  limit = 200
 ): Promise<AsyncSearchResponse> {
   const params = new URLSearchParams({
     offset: String(offset),

@@ -21,11 +21,9 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  asyncSearchPage,
-  asyncSearchStatus,
-  startAsyncSearch,
+  searchPhotos,
   suggestKeywords,
-  type AsyncSearchResponse,
+  type SearchResponse,
 } from "../api/search";
 import { getDownloadToken } from "../api/files";
 import useDebounce from "../hooks/useDebounce";
@@ -39,18 +37,11 @@ export default function GalleryPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const debounced = useDebounce(submittedQuery, 300);
   const debouncedInput = useDebounce(query, 300);
-  const pageSize = 60;
+  const pageSize = 200;
   const { logout } = useAuth();
 
-  const [searchJobId, setSearchJobId] = useState<string | null>(null);
-  const [pollStatus, setPollStatus] = useState(true);
-  useEffect(() => {
-    setSearchJobId(null);
-    setPollStatus(true);
-  }, [debounced]);
-
-  type PageParam = { offset: number; jobId?: string };
-  type SearchPage = AsyncSearchResponse;
+  type PageParam = { offset: number };
+  type SearchPage = SearchResponse;
 
   const searchQuery = useInfiniteQuery<SearchPage, Error, InfiniteData<SearchPage>, string[], PageParam>({
     queryKey: ["search", debounced],
@@ -58,14 +49,8 @@ export default function GalleryPage() {
       string[],
       PageParam
     >) => {
-      const { offset, jobId } = pageParam;
-      if (!jobId) {
-        const initial = await startAsyncSearch(debounced, pageSize);
-        const newJobId = initial.job_id ?? undefined;
-        setSearchJobId(newJobId ?? null);
-        return { ...initial, job_id: newJobId };
-      }
-      return asyncSearchPage(jobId, offset, pageSize);
+      const { offset } = pageParam;
+      return searchPhotos(debounced, offset, pageSize);
     },
     getNextPageParam: (lastPage) => {
       if (!lastPage.next_cursor) {
@@ -73,7 +58,6 @@ export default function GalleryPage() {
       }
       return {
         offset: Number(lastPage.next_cursor),
-        jobId: lastPage.job_id ?? searchJobId ?? undefined,
       };
     },
     initialPageParam: { offset: 0 },
@@ -95,37 +79,12 @@ export default function GalleryPage() {
   const totalAll = totals?.total_all ?? items.length;
   const totalShown = items.length;
 
-  const statusQuery = useQuery({
-    queryKey: ["search-status", searchJobId],
-    queryFn: () => asyncSearchStatus(searchJobId as string),
-    enabled: Boolean(searchJobId) && pollStatus,
-    refetchInterval: 2000,
-  });
-
   const [liveTotalFound, setLiveTotalFound] = useState<number>(totalFound);
   const lastTotalRef = useRef<number | null>(null);
-  useEffect(() => {
-    const nextTotal = statusQuery.data?.total_found;
-    if (typeof nextTotal !== "number") {
-      return;
-    }
-    if (lastTotalRef.current === nextTotal) {
-      return;
-    }
-    lastTotalRef.current = nextTotal;
-    setLiveTotalFound(nextTotal);
-  }, [statusQuery.data?.total_found]);
-
   useEffect(() => {
     setLiveTotalFound(totalFound);
     lastTotalRef.current = totalFound;
   }, [debounced, totalFound]);
-
-  useEffect(() => {
-    if (statusQuery.data?.status === "completed") {
-      setPollStatus(false);
-    }
-  }, [statusQuery.data?.status]);
 
   return (
     <Box sx={{ minHeight: "100vh", backgroundColor: "#f7f1ea" }}>

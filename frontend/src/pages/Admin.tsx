@@ -40,6 +40,7 @@ import {
   reindexStatus,
   reindexSearch,
   refreshPreviews,
+  restartPreviews,
   refreshAll,
   updateUser,
 } from "../api/admin";
@@ -60,6 +61,7 @@ export default function AdminPage() {
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [reindexBusy, setReindexBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
+  const [restartPreviewBusy, setRestartPreviewBusy] = useState(false);
   const [orphanBusy, setOrphanBusy] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
 
@@ -227,6 +229,21 @@ export default function AdminPage() {
             disabled={previewBusy}
           >
             Обновить превью
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={async () => {
+              setRestartPreviewBusy(true);
+              try {
+                await restartPreviews();
+              } finally {
+                setRestartPreviewBusy(false);
+              }
+            }}
+            disabled={restartPreviewBusy}
+          >
+            Перезапустить превью
           </Button>
         </Stack>
         <Box sx={{ mt: 2 }}>

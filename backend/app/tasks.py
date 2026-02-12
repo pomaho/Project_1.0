@@ -732,6 +732,53 @@ def _remove_empty_dirs(root: str) -> int:
     return removed
 
 
+def cancel_preview_tasks() -> dict:
+    inspect = celery_app.control.inspect()
+    active = inspect.active() or {}
+    reserved = inspect.reserved() or {}
+    scheduled = inspect.scheduled() or {}
+
+    revoked: set[str] = set()
+    active_count = 0
+    reserved_count = 0
+    scheduled_count = 0
+
+    for tasks in active.values():
+        for task in tasks or []:
+            if task.get("name") == "generate_previews":
+                task_id = task.get("id")
+                if task_id:
+                    revoked.add(task_id)
+                active_count += 1
+
+    for tasks in reserved.values():
+        for task in tasks or []:
+            if task.get("name") == "generate_previews":
+                task_id = task.get("id")
+                if task_id:
+                    revoked.add(task_id)
+                reserved_count += 1
+
+    for tasks in scheduled.values():
+        for task in tasks or []:
+            request = task.get("request") or {}
+            if request.get("name") == "generate_previews":
+                task_id = request.get("id")
+                if task_id:
+                    revoked.add(task_id)
+                scheduled_count += 1
+
+    for task_id in revoked:
+        celery_app.control.revoke(task_id, terminate=True, signal="SIGKILL")
+
+    return {
+        "revoked": len(revoked),
+        "active": active_count,
+        "reserved": reserved_count,
+        "scheduled": scheduled_count,
+    }
+
+
 def _async_meta_key(job_id: str) -> str:
     return f"{ASYNC_PREFIX}:{job_id}:meta"
 
@@ -757,6 +804,7 @@ def async_search_task(job_id: str) -> dict:
 
     session: Session = SessionLocal()
     try:
+        query_terms = [part.strip().lower() for part in query.split() if part.strip()]
         total_found = int(meta.get("total_found") or 0)
         scan_offset = int(meta.get("next_offset") or 0)
         with get_client() as search_client:
@@ -766,6 +814,10 @@ def async_search_task(job_id: str) -> dict:
                     "limit": ASYNC_CHUNK_SIZE,
                     "offset": scan_offset,
                 }
+                if query_terms:
+                    payload["filter"] = " AND ".join(
+                        f"keywords_norm = \"{term}\"" for term in query_terms
+                    )
                 data = search_documents(search_client, payload)
                 hits = data.get("hits", [])
                 if not hits:
@@ -785,6 +837,9 @@ def async_search_task(job_id: str) -> dict:
                     file_id = hit.get("id")
                     file_row = file_map.get(file_id)
                     if not file_row:
+                        continue
+                    keywords_norm = {kw.value_norm for kw in file_row.keywords}
+                    if query_terms and not all(term in keywords_norm for term in query_terms):
                         continue
                     if client.sismember(_async_seen_key(job_id), file_id):
                         continue
@@ -844,10 +899,9 @@ def refresh_previews_cycle(round_num: int, max_rounds: int | None = None) -> dic
     session: Session = SessionLocal()
     try:
         max_rounds = max_rounds or settings.preview_check_rounds
-        set_preview_exclusive(True)
         counts = _compute_preview_counts(session)
         payload = {
-            "status": "running" if round_num < max_rounds else "completed",
+            "status": "completed",
             "round": round_num,
             "max_rounds": max_rounds,
             "total_files": counts["total_files"],
@@ -857,20 +911,7 @@ def refresh_previews_cycle(round_num: int, max_rounds: int | None = None) -> dic
             "updated_at": datetime.utcnow().isoformat(),
         }
         set_preview_status(payload)
-
-        if counts["missing_previews"] > 0:
-            queue_missing_previews_task.delay()
-
-        if round_num < max_rounds:
-            refresh_previews_cycle.apply_async(
-                args=[round_num + 1, max_rounds],
-                countdown=settings.preview_check_interval_seconds,
-            )
-        else:
-            payload["status"] = "completed"
-            set_preview_status(payload)
-            set_preview_exclusive(False)
-
+        set_preview_exclusive(False)
         return payload
     finally:
         session.close()
