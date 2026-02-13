@@ -26,6 +26,7 @@ import {
   AuditLog,
   IndexRunStatus,
   OrphanPreviewStatus,
+  ShotAtStatus,
   cancelIndex,
   cleanupOrphanPreviews,
   createUser,
@@ -39,8 +40,11 @@ import {
   ReindexStatus,
   reindexStatus,
   reindexSearch,
+  shotAtStatus,
+  resetShotAt,
   refreshPreviews,
   restartPreviews,
+  refreshShotAt,
   refreshAll,
   updateUser,
 } from "../api/admin";
@@ -57,11 +61,13 @@ export default function AdminPage() {
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
   const [orphans, setOrphans] = useState<OrphanPreviewStatus | null>(null);
   const [reindex, setReindex] = useState<ReindexStatus | null>(null);
+  const [shotAt, setShotAt] = useState<ShotAtStatus | null>(null);
   const [form, setForm] = useState({ email: "", password: "", role: "viewer" });
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [reindexBusy, setReindexBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [restartPreviewBusy, setRestartPreviewBusy] = useState(false);
+  const [shotAtBusy, setShotAtBusy] = useState(false);
   const [orphanBusy, setOrphanBusy] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
 
@@ -72,12 +78,14 @@ export default function AdminPage() {
     previewStatus().then(setPreview).catch(() => setPreview(null));
     orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
     reindexStatus().then(setReindex).catch(() => setReindex(null));
+    shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
     const interval = window.setInterval(() => {
       if (document.hidden) return;
       indexStatus().then(setStatus).catch(() => setStatus(null));
       previewStatus().then(setPreview).catch(() => setPreview(null));
       orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
       reindexStatus().then(setReindex).catch(() => setReindex(null));
+      shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
     }, 15000);
     return () => window.clearInterval(interval);
   }, []);
@@ -90,6 +98,10 @@ export default function AdminPage() {
         Math.round(((orphans?.deleted ?? 0) / orphans.total_orphans) * 100)
       )
     : 0;
+  const shotAtProgress =
+    shotAt && shotAt.total > 0
+      ? Math.min(100, Math.round((shotAt.scanned / shotAt.total) * 100))
+      : 0;
 
   const handleCreateUser = async () => {
     const payload = { ...form };
@@ -175,11 +187,54 @@ export default function AdminPage() {
           >
             Остановить скан
           </Button>
+          <Button
+            variant="outlined"
+            onClick={async () => {
+              setShotAtBusy(true);
+              try {
+                await refreshShotAt();
+              } finally {
+                setShotAtBusy(false);
+              }
+            }}
+            disabled={shotAtBusy}
+          >
+            Перечитать даты съемки
+          </Button>
         </Stack>
+        <Box sx={{ mt: 1 }}>
+          <Button
+            variant="text"
+            color="warning"
+            onClick={async () => {
+              setShotAtBusy(true);
+              try {
+                await resetShotAt();
+                await shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
+              } finally {
+                setShotAtBusy(false);
+              }
+            }}
+            disabled={shotAtBusy}
+          >
+            Сбросить прогресс
+          </Button>
+        </Box>
         <Box sx={{ mt: 2 }}>
           <Typography variant="body2">
             Реиндекс: {reindex?.status ?? "—"} • Обработано: {reindex?.count ?? "—"}
           </Typography>
+        </Box>
+        <Box sx={{ mt: 2 }}>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Даты съемки: {shotAt?.status ?? "—"} • Обработано: {shotAt?.scanned ?? "—"} /{" "}
+            {shotAt?.total ?? "—"} • Обновлено: {shotAt?.updated ?? "—"}
+          </Typography>
+          <LinearProgress
+            variant={shotAt?.total ? "determinate" : "determinate"}
+            value={shotAtProgress}
+            sx={{ height: 8, borderRadius: 999 }}
+          />
         </Box>
         {run && (
           <Box sx={{ mt: 2 }}>

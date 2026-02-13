@@ -15,18 +15,22 @@ from app.tasks import (
     get_orphan_status,
     get_preview_status,
     get_reindex_status,
+    get_shot_at_status,
     reindex_after_metadata_task,
     cancel_index_run,
     cleanup_orphan_previews_task,
     cancel_preview_tasks,
     queue_missing_metadata_task,
     queue_missing_previews_task,
+    refresh_shot_at_task,
     refresh_previews_cycle,
     reindex_search_task,
     scan_storage_task,
     set_orphan_status,
     set_preview_exclusive,
     set_preview_status,
+    set_shot_at_status,
+    reset_shot_at_state,
     set_reindex_status,
 )
 
@@ -174,6 +178,71 @@ def restart_previews(
     )
     db.commit()
     return {"status": "queued", **cancelled}
+
+
+@router.post("/metadata/shot-at/refresh")
+def refresh_shot_at(
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    set_shot_at_status(
+        {
+            "status": "queued",
+            "total": 0,
+            "scanned": 0,
+            "updated": 0,
+            "updated_at": datetime.utcnow().isoformat(),
+            "started_at": datetime.utcnow().isoformat(),
+        }
+    )
+    refresh_shot_at_task.delay(False)
+    log_action(
+        db,
+        user_id=admin.id,
+        action=models.AuditAction.reindex,
+        meta={"action": "refresh_shot_at"},
+    )
+    db.commit()
+    return {"status": "queued"}
+
+
+@router.post("/metadata/shot-at/reset")
+def reset_shot_at_status(
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    reset_shot_at_state()
+    set_shot_at_status(
+        {
+            "status": "idle",
+            "total": 0,
+            "scanned": 0,
+            "updated": 0,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+    )
+    log_action(
+        db,
+        user_id=admin.id,
+        action=models.AuditAction.reindex,
+        meta={"action": "reset_shot_at_status"},
+    )
+    db.commit()
+    return {"status": "idle"}
+
+
+@router.get("/metadata/shot-at/status")
+def shot_at_status(_: models.User = Depends(require_admin)) -> dict:
+    status = get_shot_at_status()
+    if status:
+        return status
+    return {
+        "status": "idle",
+        "total": 0,
+        "scanned": 0,
+        "updated": 0,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
 
 
 @router.get("/previews/status")

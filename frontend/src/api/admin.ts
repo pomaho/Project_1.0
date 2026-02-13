@@ -137,6 +137,31 @@ export async function restartPreviews(): Promise<{ status: string; revoked?: num
   });
 }
 
+export async function refreshShotAt(): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>("/admin/metadata/shot-at/refresh", {
+    method: "POST",
+  });
+}
+
+export async function resetShotAt(): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>("/admin/metadata/shot-at/reset", {
+    method: "POST",
+  });
+}
+
+export type ShotAtStatus = {
+  status: string;
+  total: number;
+  scanned: number;
+  updated: number;
+  started_at?: string;
+  updated_at?: string;
+};
+
+export async function shotAtStatus(): Promise<ShotAtStatus> {
+  return apiFetch<ShotAtStatus>("/admin/metadata/shot-at/status");
+}
+
 export async function previewStatus(): Promise<PreviewStatus> {
   return apiFetch<PreviewStatus>("/admin/previews/status");
 }

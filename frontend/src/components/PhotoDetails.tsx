@@ -40,6 +40,9 @@ export default function PhotoDetails({
     if (!open || !fileId) return;
     setLoading(true);
     setError("");
+    setFile(null);
+    setKeywords([]);
+    setKeywordInput("");
     getFile(fileId)
       .then((data) => {
         setFile(data);
@@ -51,12 +54,14 @@ export default function PhotoDetails({
 
   const meta = useMemo(() => {
     if (!file) return [];
+    const shotAt = file.shot_at ? new Date(file.shot_at).toLocaleString() : "—";
     return [
       { label: "Тайтл", value: file.title ?? "—" },
       { label: "Описание", value: file.description ?? "—" },
       { label: "Файл", value: file.filename },
       { label: "Размер", value: `${Math.round(file.size_bytes / 1024)} KB` },
       { label: "Формат", value: file.mime },
+      { label: "Дата съемки", value: shotAt },
       { label: "Ориентация", value: file.orientation },
     ];
   }, [file]);

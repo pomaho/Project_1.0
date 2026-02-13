@@ -13,7 +13,7 @@ from app.celery_app import celery_app
 from app.config import settings
 from app.db import SessionLocal
 from app.keywords import normalize_keyword
-from app.metadata import extract_metadata
+from app.metadata import extract_metadata, extract_shot_at_only
 from app.previews import generate_preview, write_preview
 from app.search_client import ensure_index, get_client, search_documents, upsert_documents
 from app.search_index import build_doc, remove_file, upsert_file
@@ -30,6 +30,9 @@ INDEX_CANCEL_PREFIX = "index:cancel"
 ASYNC_PREFIX = "search:async"
 ASYNC_RESULTS_TTL_SECONDS = 3600
 ASYNC_CHUNK_SIZE = 1000
+SHOT_AT_STATUS_KEY = "metadata:shot_at:status"
+SHOT_AT_LOCK_KEY = "metadata:shot_at:lock"
+SHOT_AT_COUNTERS_KEY = "metadata:shot_at:counters"
 
 
 def _normalize_path(path: str) -> str:
@@ -75,6 +78,64 @@ def get_orphan_status() -> dict | None:
         return json.loads(raw)
     except json.JSONDecodeError:
         return None
+
+
+def set_shot_at_status(payload: dict) -> None:
+    client = get_redis()
+    client.set(SHOT_AT_STATUS_KEY, json.dumps(payload))
+
+
+def get_shot_at_status() -> dict | None:
+    client = get_redis()
+    raw = client.get(SHOT_AT_STATUS_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def reset_shot_at_state() -> None:
+    client = get_redis()
+    client.delete(SHOT_AT_LOCK_KEY)
+    client.delete(SHOT_AT_COUNTERS_KEY)
+
+
+def _shot_at_bump(scanned: int = 0, updated: int = 0, errors: int = 0) -> None:
+    client = get_redis()
+    if scanned:
+        client.hincrby(SHOT_AT_COUNTERS_KEY, "scanned", scanned)
+    if updated:
+        client.hincrby(SHOT_AT_COUNTERS_KEY, "updated", updated)
+    if errors:
+        client.hincrby(SHOT_AT_COUNTERS_KEY, "errors", errors)
+
+    counts = client.hgetall(SHOT_AT_COUNTERS_KEY)
+    scanned_raw = counts.get("scanned") or counts.get(b"scanned") or "0"
+    updated_raw = counts.get("updated") or counts.get(b"updated") or "0"
+    errors_raw = counts.get("errors") or counts.get(b"errors") or "0"
+    total_raw = counts.get("total") or counts.get(b"total") or "0"
+    scanned_count = int(scanned_raw)
+    updated_count = int(updated_raw)
+    errors_count = int(errors_raw)
+    total_count = int(total_raw)
+
+    status = get_shot_at_status() or {}
+    total = total_count or int(status.get("total") or 0)
+    payload = {
+        "status": status.get("status", "running"),
+        "total": total,
+        "scanned": scanned_count,
+        "updated": updated_count,
+        "errors": errors_count,
+        "updated_at": datetime.utcnow().isoformat(),
+        "started_at": status.get("started_at"),
+    }
+    if total and scanned_count >= total:
+        payload["status"] = "completed"
+        client.delete(SHOT_AT_LOCK_KEY)
+    set_shot_at_status(payload)
 
 
 def set_reindex_status(payload: dict) -> None:
@@ -641,6 +702,118 @@ def queue_missing_metadata_task() -> dict:
             extract_metadata_task.delay(file_id)
             queued += 1
         return {"status": "ok", "queued": queued}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="refresh_shot_at")
+def refresh_shot_at_task(only_missing: bool = False) -> dict:
+    if settings.storage_mode != "filesystem":
+        return {"status": "skipped", "reason": "non-filesystem mode"}
+
+    client = get_redis()
+    if not client.set(SHOT_AT_LOCK_KEY, "1", nx=True, ex=60 * 60):
+        status = get_shot_at_status() or {}
+        counts = client.hgetall(SHOT_AT_COUNTERS_KEY)
+        scanned_count = int((counts.get(b"scanned") or b"0").decode())
+        total_count = int(status.get("total") or 0)
+        # If lock is stuck and no progress recorded, clear it and continue.
+        if status.get("status") in {"queued", "running"} and scanned_count == 0 and total_count == 0:
+            reset_shot_at_state()
+            client.set(SHOT_AT_LOCK_KEY, "1", nx=True, ex=60 * 60)
+        else:
+            return {"status": "skipped", "reason": "already_running"}
+
+    session: Session = SessionLocal()
+    try:
+        query = session.query(models.File.id).filter(models.File.deleted_at.is_(None))
+        if only_missing:
+            query = query.filter(models.File.shot_at.is_(None))
+
+        total = query.count()
+        client.delete(SHOT_AT_COUNTERS_KEY)
+        client.hset(
+            SHOT_AT_COUNTERS_KEY,
+            mapping={"scanned": 0, "updated": 0, "errors": 0, "total": total},
+        )
+        payload = {
+            "status": "running",
+            "total": total,
+            "scanned": 0,
+            "updated": 0,
+            "errors": 0,
+            "updated_at": datetime.utcnow().isoformat(),
+            "started_at": datetime.utcnow().isoformat(),
+        }
+        set_shot_at_status(payload)
+
+        batch_size = 1000
+        queued = 0
+        last_id = None
+        while True:
+            batch_query = query.order_by(models.File.id)
+            if last_id is not None:
+                batch_query = batch_query.filter(models.File.id > last_id)
+            batch_query = batch_query.limit(batch_size)
+            rows = batch_query.all()
+            if not rows:
+                break
+            for (file_id,) in rows:
+                refresh_shot_at_file.delay(file_id)
+                queued += 1
+            last_id = rows[-1][0]
+        return {"status": "queued", "total": total, "queued": queued}
+    except Exception as exc:
+        set_shot_at_status(
+            {
+                "status": "failed",
+                "total": total if "total" in locals() else 0,
+                "scanned": 0,
+                "updated": 0,
+                "errors": 0,
+                "updated_at": datetime.utcnow().isoformat(),
+                "error": str(exc),
+            }
+        )
+        reset_shot_at_state()
+        raise
+    finally:
+        session.close()
+
+
+@celery_app.task(name="refresh_shot_at_file")
+def refresh_shot_at_file(file_id: str) -> dict:
+    if settings.storage_mode != "filesystem":
+        _shot_at_bump(scanned=1, errors=1)
+        return {"status": "skipped", "reason": "non-filesystem mode"}
+
+    session: Session = SessionLocal()
+    updated = 0
+    try:
+        file_row = (
+            session.query(models.File)
+            .filter(models.File.id == file_id, models.File.deleted_at.is_(None))
+            .first()
+        )
+        if not file_row:
+            _shot_at_bump(scanned=1)
+            return {"status": "missing"}
+
+        if file_row.shot_at is not None:
+            _shot_at_bump(scanned=1)
+            return {"status": "skipped", "reason": "already_has_shot_at"}
+
+        shot_at = extract_shot_at_only(file_row.original_key)
+        if shot_at and file_row.shot_at != shot_at:
+            file_row.shot_at = shot_at
+            file_row.updated_at = datetime.utcnow()
+            updated = 1
+        session.commit()
+        _shot_at_bump(scanned=1, updated=updated)
+        return {"status": "ok", "updated": updated}
+    except Exception:
+        _shot_at_bump(scanned=1, errors=1)
+        raise
     finally:
         session.close()
 

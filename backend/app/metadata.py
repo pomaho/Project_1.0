@@ -11,7 +11,14 @@ from typing import Any
 def _parse_exif_datetime(value: str) -> datetime | None:
     if not value:
         return None
-    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+    for fmt in (
+        "%Y:%m:%d %H:%M:%S%z",
+        "%Y:%m:%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S%z",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
         try:
             return datetime.strptime(value, fmt)
         except ValueError:
@@ -80,6 +87,9 @@ def _extract_keywords(record: dict[str, Any]) -> list[str]:
     return candidates
 
 
+EXIFTOOL_TIMEOUT_SECONDS = 10
+
+
 def extract_metadata(path: str) -> dict[str, Any]:
     file_path = Path(path)
     if not file_path.exists():
@@ -98,10 +108,11 @@ def extract_metadata(path: str) -> dict[str, Any]:
             check=True,
             capture_output=True,
             text=True,
+            timeout=EXIFTOOL_TIMEOUT_SECONDS,
         )
         payload = json.loads(result.stdout)
         record = payload[0] if payload else {}
-    except (subprocess.SubprocessError, json.JSONDecodeError, FileNotFoundError):
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
         record = {}
 
     mime, _ = mimetypes.guess_type(file_path.name)
@@ -122,17 +133,66 @@ def extract_metadata(path: str) -> dict[str, Any]:
         or record.get("Description")
     )
 
+    shot_at = _parse_exif_datetime(
+        record.get("DateTimeOriginal")
+        or record.get("EXIF:CreateDate")
+        or record.get("CreateDate")
+        or record.get("XMP:CreateDate")
+        or record.get("ModifyDate")
+        or record.get("XMP:ModifyDate")
+        or record.get("FileModifyDate")
+        or ""
+    )
+
     return {
         "keywords": _extract_keywords(record),
-        "shot_at": _parse_exif_datetime(
-            record.get("DateTimeOriginal")
-            or record.get("CreateDate")
-            or record.get("XMP:CreateDate")
-            or ""
-        ),
+        "shot_at": shot_at,
         "width": record.get("ImageWidth"),
         "height": record.get("ImageHeight"),
         "mime": record.get("MIMEType") or mime or "application/octet-stream",
         "title": _coerce_text(title),
         "description": _coerce_text(description),
     }
+
+
+def extract_shot_at_only(path: str) -> datetime | None:
+    file_path = Path(path)
+    if not file_path.exists():
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                "exiftool",
+                "-json",
+                "-n",
+                "-charset",
+                "utf8",
+                "-DateTimeOriginal",
+                "-CreateDate",
+                "-XMP:CreateDate",
+                "-ModifyDate",
+                "-XMP:ModifyDate",
+                "-FileModifyDate",
+                str(file_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=EXIFTOOL_TIMEOUT_SECONDS,
+        )
+        payload = json.loads(result.stdout)
+        record = payload[0] if payload else {}
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+        return None
+
+    return _parse_exif_datetime(
+        record.get("DateTimeOriginal")
+        or record.get("EXIF:CreateDate")
+        or record.get("CreateDate")
+        or record.get("XMP:CreateDate")
+        or record.get("ModifyDate")
+        or record.get("XMP:ModifyDate")
+        or record.get("FileModifyDate")
+        or ""
+    )

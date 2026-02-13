@@ -58,6 +58,7 @@ def search(
         "q": query_text,
         "limit": max_fetch,
         "offset": offset,
+        "sort": ["mtime:desc"],
     }
     if query_terms:
         payload["filter"] = " AND ".join(f"keywords_norm = \"{term}\"" for term in query_terms)
