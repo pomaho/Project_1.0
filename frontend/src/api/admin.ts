@@ -16,6 +16,16 @@ export type AuditLog = {
   created_at: string;
 };
 
+export type DownloadLog = {
+  id: string;
+  user_id: string;
+  user_email: string;
+  file_id: string;
+  filename: string;
+  ip: string;
+  created_at: string;
+};
+
 export async function listUsers(): Promise<AdminUser[]> {
   return apiFetch<AdminUser[]>("/admin/users");
 }
@@ -50,6 +60,11 @@ export async function deleteUser(id: string): Promise<{ status: string }> {
 export async function fetchAudit(limit = 100, offset = 0): Promise<AuditLog[]> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   return apiFetch<AuditLog[]>(`/admin/audit?${params.toString()}`);
+}
+
+export async function fetchDownloads(limit = 100, offset = 0): Promise<DownloadLog[]> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return apiFetch<DownloadLog[]>(`/admin/downloads?${params.toString()}`);
 }
 
 export async function rescanIndex(): Promise<{ status: string }> {

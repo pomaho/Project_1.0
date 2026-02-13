@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -11,8 +11,17 @@ from app.security import decode_token
 router = APIRouter()
 
 
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
 @router.get("/{token}")
-def download_file(token: str, db: Session = Depends(get_db)) -> FileResponse:
+def download_file(token: str, request: Request, db: Session = Depends(get_db)) -> FileResponse:
     token_data = decode_token(token)
     if not token_data or token_data.get("type") != "download":
         raise HTTPException(status_code=401, detail="Invalid token")
@@ -28,7 +37,12 @@ def download_file(token: str, db: Session = Depends(get_db)) -> FileResponse:
             db,
             user_id=user_id,
             action=models.AuditAction.download,
-            meta={"file_id": file_id},
+            meta={
+                "event": "download",
+                "file_id": file_id,
+                "filename": file_row.filename,
+                "ip": _client_ip(request),
+            },
         )
         db.commit()
     return FileResponse(file_row.original_key, media_type=file_row.mime, filename=file_row.filename)

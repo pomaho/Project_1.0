@@ -24,6 +24,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AdminUser,
   AuditLog,
+  DownloadLog,
   IndexRunStatus,
   OrphanPreviewStatus,
   ShotAtStatus,
@@ -32,6 +33,7 @@ import {
   createUser,
   deleteUser,
   fetchAudit,
+  fetchDownloads,
   indexStatus,
   listUsers,
   orphanPreviewStatus,
@@ -55,6 +57,7 @@ export default function AdminPage() {
   const [tab, setTab] = useState(0);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [audit, setAudit] = useState<AuditLog[]>([]);
+  const [downloads, setDownloads] = useState<DownloadLog[]>([]);
   const [status, setStatus] = useState<{ files: number; run?: IndexRunStatus | null } | null>(
     null
   );
@@ -74,6 +77,7 @@ export default function AdminPage() {
   useEffect(() => {
     listUsers().then(setUsers).catch(() => setUsers([]));
     fetchAudit().then(setAudit).catch(() => setAudit([]));
+    fetchDownloads().then(setDownloads).catch(() => setDownloads([]));
     indexStatus().then(setStatus).catch(() => setStatus(null));
     previewStatus().then(setPreview).catch(() => setPreview(null));
     orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
@@ -86,9 +90,12 @@ export default function AdminPage() {
       orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
       reindexStatus().then(setReindex).catch(() => setReindex(null));
       shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
+      if (tab === 2) {
+        fetchDownloads().then(setDownloads).catch(() => setDownloads([]));
+      }
     }, 15000);
     return () => window.clearInterval(interval);
-  }, []);
+  }, [tab]);
 
   const run = status?.run ?? null;
   const previewProgress = Math.round(((preview?.progress ?? 0) * 100) || 0);
@@ -346,8 +353,32 @@ export default function AdminPage() {
       <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ mb: 2 }}>
         <Tab label="Пользователи" />
         <Tab label="Аудит" />
+        <Tab label="Downloads" />
       </Tabs>
-      {tab === 0 ? (
+      {tab === 2 ? (
+        <Paper>
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableCell>Time</TableCell>
+                <TableCell>User</TableCell>
+                <TableCell>IP</TableCell>
+                <TableCell>File</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {downloads.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>{new Date(row.created_at).toLocaleString()}</TableCell>
+                  <TableCell>{row.user_email}</TableCell>
+                  <TableCell>{row.ip}</TableCell>
+                  <TableCell>{row.filename || row.file_id}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Paper>
+      ) : tab === 0 ? (
         <Box>
           <Paper sx={{ p: 2, mb: 3 }}>
             <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems="center">

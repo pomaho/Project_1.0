@@ -94,3 +94,13 @@ class AuditLogOut(BaseModel):
     action: str
     meta: dict
     created_at: datetime
+
+
+class DownloadLogOut(BaseModel):
+    id: str
+    user_id: str
+    user_email: EmailStr
+    file_id: str
+    filename: str
+    ip: str
+    created_at: datetime

@@ -9,7 +9,7 @@ from app.audit import log_action
 from app.config import settings
 from app.db import get_db
 from app.deps import require_admin
-from app.schemas import AuditLogOut, UserCreate, UserOut, UserUpdate
+from app.schemas import AuditLogOut, DownloadLogOut, UserCreate, UserOut, UserUpdate
 from app.security import hash_password
 from app.tasks import (
     get_orphan_status,
@@ -474,3 +474,43 @@ def audit_log(
         )
         for row in rows
     ]
+
+
+@router.get("/downloads", response_model=list[DownloadLogOut])
+def download_log(
+    limit: int = 100,
+    offset: int = 0,
+    _: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> list[DownloadLogOut]:
+    fetch_limit = max(limit * 3, limit)
+    rows = (
+        db.query(models.AuditLog, models.User.email)
+        .join(models.User, models.User.id == models.AuditLog.user_id)
+        .filter(models.AuditLog.action == models.AuditAction.download)
+        .order_by(models.AuditLog.created_at.desc())
+        .offset(offset)
+        .limit(fetch_limit)
+        .all()
+    )
+    items: list[DownloadLogOut] = []
+    for row, email in rows:
+        meta = row.meta or {}
+        if meta.get("event") and meta.get("event") != "download":
+            continue
+        if not meta.get("ip"):
+            continue
+        items.append(
+            DownloadLogOut(
+                id=row.id,
+                user_id=row.user_id,
+                user_email=email,
+                file_id=meta.get("file_id", ""),
+                filename=meta.get("filename", ""),
+                ip=meta.get("ip", ""),
+                created_at=row.created_at,
+            )
+        )
+        if len(items) >= limit:
+            break
+    return items

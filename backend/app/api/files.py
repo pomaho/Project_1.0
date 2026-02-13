@@ -122,7 +122,12 @@ def download_token(
     if not check_download_limit(user.id, settings.rate_limit_downloads_per_min):
         raise HTTPException(status_code=429, detail="Download rate limit exceeded")
     token = create_download_token(file_id, user.id, settings.download_token_ttl_seconds)
-    log_action(db, user_id=user.id, action=models.AuditAction.download, meta={"file_id": file_id})
+    log_action(
+        db,
+        user_id=user.id,
+        action=models.AuditAction.download,
+        meta={"file_id": file_id, "event": "token"},
+    )
     db.commit()
     return DownloadTokenResponse(token=token)
 
