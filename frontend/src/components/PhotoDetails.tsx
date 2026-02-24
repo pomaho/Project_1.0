@@ -57,6 +57,7 @@ export default function PhotoDetails({
       { label: "Тайтл", value: file.title ?? "—" },
       { label: "Описание", value: file.description ?? "—" },
       { label: "Файл", value: file.filename },
+      { label: "Путь", value: file.original_key },
       { label: "Размер", value: `${Math.round(file.size_bytes / 1024)} KB` },
       { label: "Формат", value: file.mime },
       { label: "Дата съемки", value: shotAt },
@@ -70,7 +71,7 @@ export default function PhotoDetails({
       const { token } = await getDownloadToken(file.id);
       window.location.href = `/api/download/${token}`;
     } catch {
-      setError("РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕР»СѓС‡РёС‚СЊ СЃСЃС‹Р»РєСѓ РґР»СЏ СЃРєР°С‡РёРІР°РЅРёСЏ");
+      setError("Не удалось получить ссылку для скачивания");
     }
   };
 
@@ -105,7 +106,7 @@ export default function PhotoDetails({
                   startIcon={<CloudDownloadIcon />}
                   onClick={handleDownload}
                 >
-                  РЎРєР°С‡Р°С‚СЊ РѕСЂРёРіРёРЅР°Р»
+                      Скачать оригинал
                   </Button>
                 )}
               </Stack>

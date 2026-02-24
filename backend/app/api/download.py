@@ -48,6 +48,7 @@ def download_file(token: str, request: Request, db: Session = Depends(get_db)) -
                 "event": "download",
                 "file_id": file_id,
                 "filename": file_row.filename,
+                "original_key": file_row.original_key,
                 "ip": _client_ip(request),
             },
         )

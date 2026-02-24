@@ -529,6 +529,7 @@ def download_log(
                 user_email=email,
                 file_id=meta.get("file_id", ""),
                 filename=meta.get("filename", ""),
+                original_key=meta.get("original_key", ""),
                 ip=meta.get("ip", ""),
                 created_at=row.created_at,
             )

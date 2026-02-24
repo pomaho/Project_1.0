@@ -51,6 +51,7 @@ import {
   updateUser,
 } from "../api/admin";
 import { useAuth } from "../auth";
+import { withAccessToken } from "../api/client";
 
 const roles = ["admin", "manager", "viewer"] as const;
 
@@ -60,6 +61,8 @@ export default function AdminPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [audit, setAudit] = useState<AuditLog[]>([]);
   const [downloads, setDownloads] = useState<DownloadLog[]>([]);
+  const [downloadsPage, setDownloadsPage] = useState(0);
+  const downloadsLimit = 50;
   const [status, setStatus] = useState<{ files: number; run?: IndexRunStatus | null } | null>(
     null
   );
@@ -79,7 +82,9 @@ export default function AdminPage() {
   useEffect(() => {
     listUsers().then(setUsers).catch(() => setUsers([]));
     fetchAudit().then(setAudit).catch(() => setAudit([]));
-    fetchDownloads().then(setDownloads).catch(() => setDownloads([]));
+    fetchDownloads(downloadsLimit, downloadsPage * downloadsLimit)
+      .then(setDownloads)
+      .catch(() => setDownloads([]));
     indexStatus().then(setStatus).catch(() => setStatus(null));
     previewStatus().then(setPreview).catch(() => setPreview(null));
     orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
@@ -93,11 +98,13 @@ export default function AdminPage() {
       reindexStatus().then(setReindex).catch(() => setReindex(null));
       shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
       if (tab === 2) {
-        fetchDownloads().then(setDownloads).catch(() => setDownloads([]));
+        fetchDownloads(downloadsLimit, downloadsPage * downloadsLimit)
+          .then(setDownloads)
+          .catch(() => setDownloads([]));
       }
     }, 15000);
     return () => window.clearInterval(interval);
-  }, [tab]);
+  }, [tab, downloadsPage]);
 
   const run = status?.run ?? null;
   const previewProgress = Math.round(((preview?.progress ?? 0) * 100) || 0);
@@ -376,7 +383,9 @@ export default function AdminPage() {
                 <TableCell>Time</TableCell>
                 <TableCell>User</TableCell>
                 <TableCell>IP</TableCell>
+                <TableCell>Preview</TableCell>
                 <TableCell>File</TableCell>
+                <TableCell>Path</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -385,11 +394,41 @@ export default function AdminPage() {
                   <TableCell>{new Date(row.created_at).toLocaleString()}</TableCell>
                   <TableCell>{row.user_email}</TableCell>
                   <TableCell>{row.ip}</TableCell>
+                  <TableCell>
+                    <Box
+                      component="img"
+                      src={withAccessToken(`/api/files/${row.file_id}/preview?size=thumb`)}
+                      alt={row.filename || row.file_id}
+                      sx={{ width: 56, height: 40, objectFit: "contain", borderRadius: 1 }}
+                    />
+                  </TableCell>
                   <TableCell>{row.filename || row.file_id}</TableCell>
+                  <TableCell>{row.original_key}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
+          <Stack direction="row" spacing={2} alignItems="center" sx={{ p: 2, justifyContent: "flex-end" }}>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={downloadsPage === 0}
+              onClick={() => setDownloadsPage((prev) => Math.max(0, prev - 1))}
+            >
+              Назад
+            </Button>
+            <Typography variant="body2">
+              Страница {downloadsPage + 1}
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={downloads.length < downloadsLimit}
+              onClick={() => setDownloadsPage((prev) => prev + 1)}
+            >
+              Вперед
+            </Button>
+          </Stack>
         </Paper>
       ) : tab === 0 ? (
         <Box>

@@ -23,6 +23,7 @@ export type DownloadLog = {
   user_email: string;
   file_id: string;
   filename: string;
+  original_key: string;
   ip: string;
   created_at: string;
 };
