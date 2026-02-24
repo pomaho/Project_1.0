@@ -14,11 +14,13 @@ export default function PhotoGrid({
   onEndReached,
   onSelect,
   onDownload,
+  canDownload,
 }: {
   items: SearchItem[];
   onEndReached: () => void;
   onSelect: (item: SearchItem) => void;
   onDownload: (item: SearchItem) => void;
+  canDownload: boolean;
 }) {
   const [refreshTokens, setRefreshTokens] = useState<Record<string, number>>({});
 
@@ -89,21 +91,23 @@ export default function PhotoGrid({
                         }, 2000);
                       }}
                     />
-                    <IconButton
-                      size="small"
-                      sx={{
-                        position: "absolute",
-                        bottom: 8,
-                        right: 8,
-                        backgroundColor: "rgba(255,255,255,0.85)",
-                      }}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onDownload(item);
-                      }}
-                    >
-                      <CloudDownloadIcon fontSize="small" />
-                    </IconButton>
+                    {canDownload && (
+                      <IconButton
+                        size="small"
+                        sx={{
+                          position: "absolute",
+                          bottom: 8,
+                          right: 8,
+                          backgroundColor: "rgba(255,255,255,0.85)",
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDownload(item);
+                        }}
+                      >
+                        <CloudDownloadIcon fontSize="small" />
+                      </IconButton>
+                    )}
                   </Box>
                 </Box>
               );

@@ -2,6 +2,7 @@ import { apiFetch } from "./client";
 
 export type AdminUser = {
   id: string;
+  name?: string | null;
   email: string;
   role: string;
   is_active: boolean;
@@ -31,6 +32,7 @@ export async function listUsers(): Promise<AdminUser[]> {
 }
 
 export async function createUser(payload: {
+  name?: string | null;
   email: string;
   password: string;
   role: string;
@@ -43,7 +45,7 @@ export async function createUser(payload: {
 
 export async function updateUser(
   id: string,
-  payload: { role?: string; is_active?: boolean; password?: string }
+  payload: { name?: string | null; role?: string; is_active?: boolean; password?: string }
 ): Promise<AdminUser> {
   return apiFetch<AdminUser>(`/admin/users/${id}`, {
     method: "PATCH",

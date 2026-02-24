@@ -38,7 +38,8 @@ export default function GalleryPage() {
   const debounced = useDebounce(submittedQuery, 300);
   const debouncedInput = useDebounce(query, 300);
   const pageSize = 200;
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
+  const canDownload = user?.role === "admin" || user?.role === "manager";
 
   type PageParam = { offset: number };
   type SearchPage = SearchResponse;
@@ -98,16 +99,18 @@ export default function GalleryPage() {
           <Typography variant="h6" sx={{ fontWeight: 700, flexGrow: 1 }}>
             Поиск по ключевым словам
           </Typography>
-          <Chip label="Editor" size="small" color="secondary" />
-          <Button
-            variant="text"
-            color="inherit"
-            startIcon={<AdminPanelSettingsIcon />}
-            href="/admin"
-            sx={{ ml: 2 }}
-          >
-            Admin
-          </Button>
+          <Chip label={user?.name || user?.email || "User"} size="small" color="secondary" />
+          {user?.role === "admin" && (
+            <Button
+              variant="text"
+              color="inherit"
+              startIcon={<AdminPanelSettingsIcon />}
+              href="/admin"
+              sx={{ ml: 2 }}
+            >
+              Admin
+            </Button>
+          )}
           <Button variant="text" color="inherit" onClick={logout}>
             Выйти
           </Button>
@@ -177,6 +180,7 @@ export default function GalleryPage() {
                 setSelectedId(item.id);
               }
             }}
+            canDownload={canDownload}
           />
         </Box>
       </Container>
@@ -185,6 +189,7 @@ export default function GalleryPage() {
         open={Boolean(selectedId)}
         onClose={() => setSelectedId(null)}
         query={debounced}
+        canDownload={canDownload}
       />
     </Box>
   );

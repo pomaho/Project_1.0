@@ -24,7 +24,7 @@ from app.db import Base
 
 class Role(str, enum.Enum):
     admin = "admin"
-    editor = "editor"
+    manager = "manager"
     viewer = "viewer"
 
 
@@ -60,6 +60,7 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(Text, nullable=True)
     email = Column(String(320), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(Enum(Role), nullable=False, default=Role.viewer)

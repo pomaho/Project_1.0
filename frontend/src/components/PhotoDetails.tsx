@@ -1,4 +1,4 @@
-import {
+﻿import {
   Box,
   Button,
   Chip,
@@ -8,14 +8,13 @@ import {
   DialogTitle,
   IconButton,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import { useEffect, useMemo, useState } from "react";
 import { withAccessToken } from "../api/client";
-import { getDownloadToken, getFile, updateKeywords } from "../api/files";
+import { getDownloadToken, getFile } from "../api/files";
 import { extractTerms, highlightText } from "../utils/highlight";
 
 export default function PhotoDetails({
@@ -23,16 +22,16 @@ export default function PhotoDetails({
   open,
   onClose,
   query,
+  canDownload,
 }: {
   fileId: string | null;
   open: boolean;
   onClose: () => void;
   query: string;
+  canDownload: boolean;
 }) {
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [keywordInput, setKeywordInput] = useState("");
   const [keywords, setKeywords] = useState<string[]>([]);
   const [file, setFile] = useState<Awaited<ReturnType<typeof getFile>> | null>(null);
 
@@ -42,7 +41,6 @@ export default function PhotoDetails({
     setError("");
     setFile(null);
     setKeywords([]);
-    setKeywordInput("");
     getFile(fileId)
       .then((data) => {
         setFile(data);
@@ -66,39 +64,13 @@ export default function PhotoDetails({
     ];
   }, [file]);
 
-  const terms = useMemo(() => extractTerms(query), [query]);
-
-  const handleAddKeyword = () => {
-    const trimmed = keywordInput.trim();
-    if (!trimmed || keywords.includes(trimmed)) return;
-    setKeywords((prev) => [...prev, trimmed]);
-    setKeywordInput("");
-  };
-
-  const handleSave = async () => {
-    if (!file) return;
-    setSaving(true);
-    setError("");
-    const removed = file.keywords.filter((kw) => !keywords.includes(kw));
-    const added = keywords.filter((kw) => !file.keywords.includes(kw));
-    try {
-      const updated = await updateKeywords(file.id, { add: added, remove: removed });
-      setFile(updated);
-      setKeywords(updated.keywords);
-    } catch {
-      setError("Не удалось сохранить keywords");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDownload = async () => {
+  const terms = useMemo(() => extractTerms(query), [query]);const handleDownload = async () => {
     if (!file) return;
     try {
       const { token } = await getDownloadToken(file.id);
       window.location.href = `/api/download/${token}`;
     } catch {
-      setError("Не удалось получить ссылку для скачивания");
+      setError("РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕР»СѓС‡РёС‚СЊ СЃСЃС‹Р»РєСѓ РґР»СЏ СЃРєР°С‡РёРІР°РЅРёСЏ");
     }
   };
 
@@ -127,13 +99,15 @@ export default function PhotoDetails({
             />
             <Stack spacing={2}>
               <Stack direction="row" spacing={1}>
-                <Button
+                {canDownload && (
+                  <Button
                   variant="contained"
                   startIcon={<CloudDownloadIcon />}
                   onClick={handleDownload}
                 >
-                  Скачать оригинал
-                </Button>
+                  РЎРєР°С‡Р°С‚СЊ РѕСЂРёРіРёРЅР°Р»
+                  </Button>
+                )}
               </Stack>
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>
@@ -144,36 +118,10 @@ export default function PhotoDetails({
                     <Chip
                       key={kw}
                       label={highlightText(kw, terms)}
-                      onDelete={() => setKeywords((prev) => prev.filter((item) => item !== kw))}
                       sx={{ mb: 1 }}
                     />
                   ))}
                 </Stack>
-                <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                  <TextField
-                    size="small"
-                    label="Добавить keyword"
-                    value={keywordInput}
-                    onChange={(event) => setKeywordInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        handleAddKeyword();
-                      }
-                    }}
-                  />
-                  <Button variant="outlined" onClick={handleAddKeyword}>
-                    Добавить
-                  </Button>
-                </Stack>
-                <Button
-                  variant="text"
-                  sx={{ mt: 1 }}
-                  onClick={handleSave}
-                  disabled={saving}
-                >
-                  {saving ? "Сохранение..." : "Сохранить"}
-                </Button>
               </Box>
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>
@@ -201,3 +149,5 @@ export default function PhotoDetails({
     </Dialog>
   );
 }
+
+

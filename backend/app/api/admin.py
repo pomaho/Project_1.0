@@ -350,6 +350,7 @@ def list_users(_: models.User = Depends(require_admin), db: Session = Depends(ge
     return [
         UserOut(
             id=user.id,
+            name=user.name,
             email=user.email,
             role=user.role.value,
             is_active=user.is_active,
@@ -372,6 +373,7 @@ def create_user(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid role") from exc
     user = models.User(
+        name=payload.name,
         email=payload.email,
         password_hash=hash_password(payload.password),
         role=role,
@@ -410,6 +412,8 @@ def update_user(
             user.role = models.Role(payload.role)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid role") from exc
+    if payload.name is not None:
+        user.name = payload.name
     if payload.is_active is not None:
         user.is_active = payload.is_active
     if payload.password:
@@ -423,6 +427,7 @@ def update_user(
     db.commit()
     return UserOut(
         id=user.id,
+        name=user.name,
         email=user.email,
         role=user.role.value,
         is_active=user.is_active,
@@ -439,6 +444,23 @@ def delete_user(
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    has_audit = (
+        db.query(models.AuditLog.id)
+        .filter(models.AuditLog.user_id == user.id)
+        .limit(1)
+        .first()
+        is not None
+    )
+    if has_audit:
+        user.is_active = False
+        log_action(
+            db,
+            user_id=admin.id,
+            action=models.AuditAction.user_manage,
+            meta={"target_id": user.id, "action": "deactivate"},
+        )
+        db.commit()
+        return {"status": "deactivated"}
     db.delete(user)
     log_action(
         db,

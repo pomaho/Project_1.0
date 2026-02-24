@@ -50,11 +50,13 @@ import {
   refreshAll,
   updateUser,
 } from "../api/admin";
+import { useAuth } from "../auth";
 
-const roles = ["admin", "editor", "viewer"] as const;
+const roles = ["admin", "manager", "viewer"] as const;
 
 export default function AdminPage() {
   const [tab, setTab] = useState(0);
+  const { user } = useAuth();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [audit, setAudit] = useState<AuditLog[]>([]);
   const [downloads, setDownloads] = useState<DownloadLog[]>([]);
@@ -65,7 +67,7 @@ export default function AdminPage() {
   const [orphans, setOrphans] = useState<OrphanPreviewStatus | null>(null);
   const [reindex, setReindex] = useState<ReindexStatus | null>(null);
   const [shotAt, setShotAt] = useState<ShotAtStatus | null>(null);
-  const [form, setForm] = useState({ email: "", password: "", role: "viewer" });
+  const [form, setForm] = useState({ name: "", email: "", password: "", role: "viewer" });
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [reindexBusy, setReindexBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -115,7 +117,7 @@ export default function AdminPage() {
     if (!payload.email || !payload.password) return;
     const created = await createUser(payload);
     setUsers((prev) => [created, ...prev]);
-    setForm({ email: "", password: "", role: "viewer" });
+    setForm({ name: "", email: "", password: "", role: "viewer" });
   };
 
   const handleRoleChange = async (user: AdminUser, role: string) => {
@@ -133,6 +135,12 @@ export default function AdminPage() {
     setUsers((prev) => prev.filter((item) => item.id !== user.id));
   };
 
+  const handleResetPassword = async (user: AdminUser) => {
+    const next = window.prompt(`Новый пароль для ${user.email}`);
+    if (!next) return;
+    await updateUser(user.id, { password: next });
+  };
+
   const auditRows = useMemo(
     () => audit.map((row) => ({ ...row, metaJson: JSON.stringify(row.meta) })),
     [audit]
@@ -147,6 +155,11 @@ export default function AdminPage() {
         <Button variant="text" href="/">
           На главную
         </Button>
+      </Stack>
+      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 2, mt: -1 }}>
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+          {user?.name || user?.email || "User"}
+        </Typography>
       </Stack>
       <Paper sx={{ p: 2, mb: 3 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">
@@ -383,6 +396,11 @@ export default function AdminPage() {
           <Paper sx={{ p: 2, mb: 3 }}>
             <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems="center">
               <TextField
+                label="Имя"
+                value={form.name}
+                onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+              />
+              <TextField
                 label="Email"
                 value={form.email}
                 onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))}
@@ -418,6 +436,7 @@ export default function AdminPage() {
             <Table>
               <TableHead>
                 <TableRow>
+                  <TableCell>Имя</TableCell>
                   <TableCell>Email</TableCell>
                   <TableCell>Роль</TableCell>
                   <TableCell>Активен</TableCell>
@@ -427,6 +446,7 @@ export default function AdminPage() {
               <TableBody>
                 {users.map((user) => (
                   <TableRow key={user.id}>
+                    <TableCell>{user.name || user.email}</TableCell>
                     <TableCell>{user.email}</TableCell>
                     <TableCell>
                       <Select
@@ -447,6 +467,9 @@ export default function AdminPage() {
                       </Button>
                     </TableCell>
                     <TableCell align="right">
+                      <Button size="small" onClick={() => handleResetPassword(user)}>
+                        Сбросить пароль
+                      </Button>
                       <Button color="error" size="small" onClick={() => handleDelete(user)}>
                         Удалить
                       </Button>

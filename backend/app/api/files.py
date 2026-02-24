@@ -6,7 +6,7 @@ from app import models
 from app.config import settings
 from app.db import get_db
 from app.audit import log_action
-from app.deps import get_current_user, require_editor
+from app.deps import get_current_user, require_manager
 from app.keywords import normalize_keyword
 from app.previews import preview_path
 from app.schemas import DownloadTokenResponse, FileDetail, KeywordUpdateRequest
@@ -48,7 +48,7 @@ def get_file(
 def update_keywords(
     file_id: str,
     payload: KeywordUpdateRequest,
-    _: models.User = Depends(require_editor),
+    _: models.User = Depends(require_manager),
     db: Session = Depends(get_db),
 ) -> FileDetail:
     file_row = db.query(models.File).filter(models.File.id == file_id).first()
@@ -113,7 +113,7 @@ def update_keywords(
 @router.post("/{file_id}/download-token", response_model=DownloadTokenResponse)
 def download_token(
     file_id: str,
-    user: models.User = Depends(get_current_user),
+    user: models.User = Depends(require_manager),
     db: Session = Depends(get_db),
 ) -> DownloadTokenResponse:
     file_row = db.query(models.File).filter(models.File.id == file_id).first()

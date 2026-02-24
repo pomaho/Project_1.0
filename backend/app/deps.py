@@ -32,7 +32,7 @@ def require_admin(user: models.User = Depends(get_current_user)) -> models.User:
     return user
 
 
-def require_editor(user: models.User = Depends(get_current_user)) -> models.User:
-    if user.role not in {models.Role.admin, models.Role.editor}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Editor only")
+def require_manager(user: models.User = Depends(get_current_user)) -> models.User:
+    if user.role not in {models.Role.admin, models.Role.manager}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager only")
     return user

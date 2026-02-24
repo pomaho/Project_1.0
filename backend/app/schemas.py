@@ -26,6 +26,7 @@ class LoginRequest(BaseModel):
 
 class UserOut(BaseModel):
     id: str
+    name: Optional[str] = None
     email: EmailStr
     role: str
     is_active: bool
@@ -33,12 +34,14 @@ class UserOut(BaseModel):
 
 
 class UserCreate(BaseModel):
+    name: Optional[str] = None
     email: EmailStr
     password: str
     role: str
 
 
 class UserUpdate(BaseModel):
+    name: Optional[str] = None
     role: Optional[str] = None
     is_active: Optional[bool] = None
     password: Optional[str] = None

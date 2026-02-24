@@ -1,5 +1,6 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { getMe, type MeResponse } from "./api/auth";
 
 export type Tokens = {
   accessToken: string;
@@ -10,6 +11,7 @@ type AuthContextValue = {
   tokens: Tokens | null;
   setTokens: (tokens: Tokens | null) => void;
   logout: () => void;
+  user: MeResponse | null;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -28,6 +30,7 @@ function loadTokens(): Tokens | null {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [tokens, setTokensState] = useState<Tokens | null>(() => loadTokens());
+  const [user, setUser] = useState<MeResponse | null>(null);
 
   const setTokens = (next: Tokens | null) => {
     setTokensState(next);
@@ -38,8 +41,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const logout = () => setTokens(null);
-  const value = useMemo(() => ({ tokens, setTokens, logout }), [tokens]);
+  useEffect(() => {
+    let active = true;
+    if (!tokens) {
+      setUser(null);
+      return () => {
+        active = false;
+      };
+    }
+    getMe()
+      .then((profile) => {
+        if (active) setUser(profile);
+      })
+      .catch(() => {
+        if (active) setUser(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [tokens]);
+
+  const logout = () => {
+    setUser(null);
+    setTokens(null);
+  };
+  const value = useMemo(() => ({ tokens, setTokens, logout, user }), [tokens, user]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

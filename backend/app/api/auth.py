@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from app import models
 from app.db import get_db
 from app.audit import log_action
-from app.schemas import LoginRequest, RefreshRequest, TokenAccess, TokenPair
+from app.deps import get_current_user
+from app.schemas import LoginRequest, RefreshRequest, TokenAccess, TokenPair, UserOut
 from app.security import create_access_token, create_refresh_token, decode_token, verify_password
 from app.config import settings
 
@@ -39,3 +40,15 @@ def refresh(payload: RefreshRequest) -> TokenAccess:
 @router.post("/logout")
 def logout() -> dict:
     return {"status": "ok"}
+
+
+@router.get("/me", response_model=UserOut)
+def me(user: models.User = Depends(get_current_user)) -> UserOut:
+    return UserOut(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        role=user.role.value,
+        is_active=user.is_active,
+        created_at=user.created_at,
+    )

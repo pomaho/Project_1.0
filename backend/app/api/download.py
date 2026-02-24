@@ -33,6 +33,13 @@ def download_file(token: str, request: Request, db: Session = Depends(get_db)) -
         raise HTTPException(status_code=501, detail="Download mode not configured")
     user_id = token_data.get("sub")
     if user_id:
+        user = (
+            db.query(models.User)
+            .filter(models.User.id == user_id, models.User.is_active.is_(True))
+            .first()
+        )
+        if not user or user.role not in {models.Role.admin, models.Role.manager}:
+            raise HTTPException(status_code=403, detail="Manager only")
         log_action(
             db,
             user_id=user_id,
