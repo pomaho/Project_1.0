@@ -8,6 +8,7 @@
   DialogTitle,
   IconButton,
   Stack,
+  TextField,
   Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
@@ -68,6 +69,12 @@ export default function PhotoDetails({
   }, [file]);
 
   const terms = useMemo(() => extractTerms(query), [query]);
+  const shareUrl = useMemo(() => {
+    if (!file) return "";
+    const url = new URL(window.location.href);
+    url.searchParams.set("photo", file.id);
+    return url.toString();
+  }, [file]);
 
   const handleDownload = async () => {
     if (!file) return;
@@ -81,12 +88,21 @@ export default function PhotoDetails({
 
   const handleCopyLink = async () => {
     if (!file) return;
+    setError("");
     try {
-      const url = new URL(window.location.href);
-      url.searchParams.set("photo", file.id);
-      await navigator.clipboard.writeText(url.toString());
+      await navigator.clipboard.writeText(shareUrl);
       setCopyMessage("Ссылка скопирована");
+      return;
     } catch {
+      try {
+        const ok = window.prompt("Скопируйте ссылку вручную", shareUrl);
+        if (ok !== null) {
+          setCopyMessage("Ссылка готова");
+          return;
+        }
+      } catch {
+        // ignore fallback errors
+      }
       setError("Не удалось скопировать ссылку");
     }
   };
@@ -114,9 +130,9 @@ export default function PhotoDetails({
               alt={file.filename}
               sx={{ width: "100%", borderRadius: 2 }}
             />
-            <Stack spacing={2}>
-              <Stack direction="row" spacing={1}>
-                {canDownload && (
+              <Stack spacing={2}>
+                <Stack direction="row" spacing={1}>
+                  {canDownload && (
                   <Button
                     variant="contained"
                     startIcon={<CloudDownloadIcon />}
@@ -125,9 +141,7 @@ export default function PhotoDetails({
                     Скачать оригинал
                   </Button>
                 )}
-                <Button variant="outlined" onClick={handleCopyLink}>
-                  Скопировать ссылку
-                </Button>
+                
               </Stack>
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>
@@ -141,6 +155,18 @@ export default function PhotoDetails({
                       sx={{ mb: 1 }}
                     />
                   ))}
+                </Stack>
+                <Stack spacing={1}>
+                  <TextField
+                    size="small"
+                    label="Ссылка на фото"
+                    value={shareUrl}
+                    fullWidth
+                    InputProps={{ readOnly: true }}
+                  />
+                  <Button variant="outlined" onClick={handleCopyLink} disabled={!shareUrl}>
+                    Копировать ссылку
+                  </Button>
                 </Stack>
               </Box>
               <Box>

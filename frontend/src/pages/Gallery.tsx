@@ -94,19 +94,23 @@ export default function GalleryPage() {
     if (photoId && photoId !== selectedId) {
       setSelectedId(photoId);
     }
-  }, [searchParams, selectedId]);
+    if (!photoId && selectedId) {
+      setSelectedId(null);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     const params = new URLSearchParams(searchParams);
     const current = searchParams.get("photo");
     if ((current ?? null) === selectedId) return;
+    if (selectedId === null && current) return;
     if (selectedId) {
       params.set("photo", selectedId);
     } else {
       params.delete("photo");
     }
     setSearchParams(params, { replace: true });
-  }, [selectedId, searchParams, setSearchParams]);
+  }, [selectedId]);
 
   return (
     <Box sx={{ minHeight: "100vh", backgroundColor: "#f7f1ea" }}>
