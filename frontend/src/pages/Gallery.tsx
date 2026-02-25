@@ -20,6 +20,7 @@ import {
   useQuery,
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   searchPhotos,
   suggestKeywords,
@@ -35,6 +36,7 @@ export default function GalleryPage() {
   const [query, setQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const debounced = useDebounce(submittedQuery, 300);
   const debouncedInput = useDebounce(query, 300);
   const pageSize = 200;
@@ -86,6 +88,25 @@ export default function GalleryPage() {
     setLiveTotalFound(totalFound);
     lastTotalRef.current = totalFound;
   }, [debounced, totalFound]);
+
+  useEffect(() => {
+    const photoId = searchParams.get("photo");
+    if (photoId && photoId !== selectedId) {
+      setSelectedId(photoId);
+    }
+  }, [searchParams, selectedId]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams);
+    const current = searchParams.get("photo");
+    if ((current ?? null) === selectedId) return;
+    if (selectedId) {
+      params.set("photo", selectedId);
+    } else {
+      params.delete("photo");
+    }
+    setSearchParams(params, { replace: true });
+  }, [selectedId, searchParams, setSearchParams]);
 
   return (
     <Box sx={{ minHeight: "100vh", backgroundColor: "#f7f1ea" }}>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Box,
   Button,
@@ -16,6 +16,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { setTokens } = useAuth();
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -24,7 +25,8 @@ export default function LoginPage() {
     try {
       const data = await login({ email, password });
       setTokens({ accessToken: data.access_token, refreshToken: data.refresh_token });
-      navigate("/", { replace: true });
+      const next = searchParams.get("next") || "/";
+      navigate(next, { replace: true });
     } catch {
       setError("Неверные учетные данные");
     }

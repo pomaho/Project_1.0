@@ -32,6 +32,7 @@ export default function PhotoDetails({
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [copyMessage, setCopyMessage] = useState("");
   const [keywords, setKeywords] = useState<string[]>([]);
   const [file, setFile] = useState<Awaited<ReturnType<typeof getFile>> | null>(null);
 
@@ -39,6 +40,7 @@ export default function PhotoDetails({
     if (!open || !fileId) return;
     setLoading(true);
     setError("");
+    setCopyMessage("");
     setFile(null);
     setKeywords([]);
     getFile(fileId)
@@ -65,13 +67,27 @@ export default function PhotoDetails({
     ];
   }, [file]);
 
-  const terms = useMemo(() => extractTerms(query), [query]);const handleDownload = async () => {
+  const terms = useMemo(() => extractTerms(query), [query]);
+
+  const handleDownload = async () => {
     if (!file) return;
     try {
       const { token } = await getDownloadToken(file.id);
       window.location.href = `/api/download/${token}`;
     } catch {
       setError("Не удалось получить ссылку для скачивания");
+    }
+  };
+
+  const handleCopyLink = async () => {
+    if (!file) return;
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("photo", file.id);
+      await navigator.clipboard.writeText(url.toString());
+      setCopyMessage("Ссылка скопирована");
+    } catch {
+      setError("Не удалось скопировать ссылку");
     }
   };
 
@@ -102,13 +118,16 @@ export default function PhotoDetails({
               <Stack direction="row" spacing={1}>
                 {canDownload && (
                   <Button
-                  variant="contained"
-                  startIcon={<CloudDownloadIcon />}
-                  onClick={handleDownload}
-                >
-                      Скачать оригинал
+                    variant="contained"
+                    startIcon={<CloudDownloadIcon />}
+                    onClick={handleDownload}
+                  >
+                    Скачать оригинал
                   </Button>
                 )}
+                <Button variant="outlined" onClick={handleCopyLink}>
+                  Скопировать ссылку
+                </Button>
               </Stack>
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>
@@ -136,6 +155,11 @@ export default function PhotoDetails({
                   ))}
                 </Stack>
               </Box>
+              {copyMessage && (
+                <Typography variant="body2" color="success.main">
+                  {copyMessage}
+                </Typography>
+              )}
               {error && (
                 <Typography variant="body2" color="error">
                   {error}
