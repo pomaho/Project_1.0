@@ -90,11 +90,7 @@ def _extract_keywords(record: dict[str, Any]) -> list[str]:
 EXIFTOOL_TIMEOUT_SECONDS = 10
 
 
-def extract_metadata(path: str) -> dict[str, Any]:
-    file_path = Path(path)
-    if not file_path.exists():
-        return {}
-
+def _read_exif_record(file_path: Path) -> dict[str, Any]:
     try:
         result = subprocess.run(
             [
@@ -111,9 +107,17 @@ def extract_metadata(path: str) -> dict[str, Any]:
             timeout=EXIFTOOL_TIMEOUT_SECONDS,
         )
         payload = json.loads(result.stdout)
-        record = payload[0] if payload else {}
+        return payload[0] if payload else {}
     except (subprocess.SubprocessError, subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
-        record = {}
+        return {}
+
+
+def extract_metadata(path: str) -> dict[str, Any]:
+    file_path = Path(path)
+    if not file_path.exists():
+        return {}
+
+    record = _read_exif_record(file_path)
 
     mime, _ = mimetypes.guess_type(file_path.name)
 
@@ -144,8 +148,38 @@ def extract_metadata(path: str) -> dict[str, Any]:
         or ""
     )
 
+    keywords = _extract_keywords(record)
+    if not keywords:
+        for suffix in (".xmp", ".XMP"):
+            sidecar = file_path.with_suffix(suffix)
+            if not sidecar.exists():
+                continue
+            side_record = _read_exif_record(sidecar)
+            side_keywords = _extract_keywords(side_record)
+            if side_keywords:
+                keywords = side_keywords
+            if not title:
+                title = (
+                    side_record.get("XMP:Title")
+                    or side_record.get("XMP-dc:Title")
+                    or side_record.get("IPTC:Headline")
+                    or side_record.get("XMP:Headline")
+                    or side_record.get("EXIF:ImageDescription")
+                    or side_record.get("Title")
+                )
+            if not description:
+                description = (
+                    side_record.get("XMP:Description")
+                    or side_record.get("XMP-dc:Description")
+                    or side_record.get("IPTC:Caption-Abstract")
+                    or side_record.get("EXIF:ImageDescription")
+                    or side_record.get("Description")
+                )
+            if keywords:
+                break
+
     return {
-        "keywords": _extract_keywords(record),
+        "keywords": keywords,
         "shot_at": shot_at,
         "width": record.get("ImageWidth"),
         "height": record.get("ImageHeight"),

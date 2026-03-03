@@ -9,7 +9,15 @@ from app.audit import log_action
 from app.config import settings
 from app.db import get_db
 from app.deps import require_admin
-from app.schemas import AuditLogOut, DownloadLogOut, UserCreate, UserOut, UserUpdate
+from app.schemas import (
+    AuditLogOut,
+    DownloadLogOut,
+    MissingKeywordItem,
+    MissingKeywordResponse,
+    UserCreate,
+    UserOut,
+    UserUpdate,
+)
 from app.security import hash_password
 from app.tasks import (
     get_orphan_status,
@@ -32,6 +40,7 @@ from app.tasks import (
     set_shot_at_status,
     reset_shot_at_state,
     set_reindex_status,
+    extract_metadata_task,
 )
 
 router = APIRouter()
@@ -260,6 +269,63 @@ def previews_status(_: models.User = Depends(require_admin), db: Session = Depen
         "updated_at": datetime.utcnow().isoformat(),
         "started_at": (status or {}).get("started_at"),
     }
+
+
+@router.get("/keywords/missing", response_model=MissingKeywordResponse)
+def missing_keywords(
+    limit: int = 50,
+    offset: int = 0,
+    _: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> MissingKeywordResponse:
+    base = (
+        db.query(models.File)
+        .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+        .filter(models.File.deleted_at.is_(None), models.FileKeyword.file_id.is_(None))
+    )
+    total = base.count()
+    rows = (
+        base.order_by(models.File.mtime.desc())
+        .offset(max(0, offset))
+        .limit(min(200, max(1, limit)))
+        .all()
+    )
+    items = [
+        MissingKeywordItem(
+            id=row.id,
+            filename=row.filename,
+            original_key=row.original_key,
+            mtime=row.mtime,
+            size_bytes=row.size_bytes,
+        )
+        for row in rows
+    ]
+    return MissingKeywordResponse(total=total, items=items)
+
+
+@router.post("/keywords/missing/rescan")
+def rescan_missing_keywords(
+    admin: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    rows = (
+        db.query(models.File.id)
+        .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+        .filter(models.File.deleted_at.is_(None), models.FileKeyword.file_id.is_(None))
+        .yield_per(1000)
+    )
+    queued = 0
+    for (file_id,) in rows:
+        extract_metadata_task.delay(file_id)
+        queued += 1
+    log_action(
+        db,
+        user_id=admin.id,
+        action=models.AuditAction.reindex,
+        meta={"action": "refresh_missing_keywords", "queued": queued},
+    )
+    db.commit()
+    return {"status": "queued", "queued": queued}
 
 
 @router.post("/previews/orphans/cleanup")

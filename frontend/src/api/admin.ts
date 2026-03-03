@@ -193,3 +193,30 @@ export async function cleanupOrphanPreviews(): Promise<{ status: string }> {
 export async function orphanPreviewStatus(): Promise<OrphanPreviewStatus> {
   return apiFetch<OrphanPreviewStatus>("/admin/previews/orphans/status");
 }
+
+export type MissingKeywordItem = {
+  id: string;
+  filename: string;
+  original_key: string;
+  mtime: string;
+  size_bytes: number;
+};
+
+export type MissingKeywordResponse = {
+  total: number;
+  items: MissingKeywordItem[];
+};
+
+export async function fetchMissingKeywords(
+  limit = 50,
+  offset = 0
+): Promise<MissingKeywordResponse> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return apiFetch<MissingKeywordResponse>(`/admin/keywords/missing?${params.toString()}`);
+}
+
+export async function rescanMissingKeywords(): Promise<{ status: string; queued?: number }> {
+  return apiFetch<{ status: string; queued?: number }>("/admin/keywords/missing/rescan", {
+    method: "POST",
+  });
+}

@@ -706,6 +706,28 @@ def queue_missing_metadata_task() -> dict:
         session.close()
 
 
+@celery_app.task(name="queue_missing_keywords")
+def queue_missing_keywords_task() -> dict:
+    if settings.storage_mode != "filesystem":
+        return {"status": "skipped", "reason": "non-filesystem mode"}
+
+    session: Session = SessionLocal()
+    queued = 0
+    try:
+        rows = (
+            session.query(models.File.id)
+            .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+            .filter(models.File.deleted_at.is_(None), models.FileKeyword.file_id.is_(None))
+            .all()
+        )
+        for (file_id,) in rows:
+            extract_metadata_task.delay(file_id)
+            queued += 1
+        return {"status": "ok", "queued": queued}
+    finally:
+        session.close()
+
+
 @celery_app.task(name="refresh_shot_at")
 def refresh_shot_at_task(only_missing: bool = False) -> dict:
     if settings.storage_mode != "filesystem":

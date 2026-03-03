@@ -28,6 +28,7 @@ import {
   IndexRunStatus,
   OrphanPreviewStatus,
   ShotAtStatus,
+  MissingKeywordItem,
   cancelIndex,
   cleanupOrphanPreviews,
   createUser,
@@ -49,6 +50,8 @@ import {
   refreshShotAt,
   refreshAll,
   updateUser,
+  fetchMissingKeywords,
+  rescanMissingKeywords,
 } from "../api/admin";
 import { useAuth } from "../auth";
 import { withAccessToken } from "../api/client";
@@ -70,6 +73,12 @@ export default function AdminPage() {
   const [orphans, setOrphans] = useState<OrphanPreviewStatus | null>(null);
   const [reindex, setReindex] = useState<ReindexStatus | null>(null);
   const [shotAt, setShotAt] = useState<ShotAtStatus | null>(null);
+  const [missingKeywords, setMissingKeywords] = useState<MissingKeywordItem[]>([]);
+  const [missingKeywordsTotal, setMissingKeywordsTotal] = useState(0);
+  const [missingKeywordsPage, setMissingKeywordsPage] = useState(0);
+  const missingKeywordsLimit = 50;
+  const [missingKeywordsBaseline, setMissingKeywordsBaseline] = useState<number | null>(null);
+  const [missingKeywordsQueued, setMissingKeywordsQueued] = useState<number | null>(null);
   const [form, setForm] = useState({ name: "", email: "", password: "", role: "viewer" });
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [reindexBusy, setReindexBusy] = useState(false);
@@ -78,6 +87,8 @@ export default function AdminPage() {
   const [shotAtBusy, setShotAtBusy] = useState(false);
   const [orphanBusy, setOrphanBusy] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
+  const [missingKeywordsBusy, setMissingKeywordsBusy] = useState(false);
+  const [missingKeywordsRescanBusy, setMissingKeywordsRescanBusy] = useState(false);
 
   useEffect(() => {
     listUsers().then(setUsers).catch(() => setUsers([]));
@@ -90,6 +101,17 @@ export default function AdminPage() {
     orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
     reindexStatus().then(setReindex).catch(() => setReindex(null));
     shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
+    if (tab === 3) {
+      fetchMissingKeywords(missingKeywordsLimit, missingKeywordsPage * missingKeywordsLimit)
+        .then((data) => {
+          setMissingKeywords(data.items);
+          setMissingKeywordsTotal(data.total);
+        })
+        .catch(() => {
+          setMissingKeywords([]);
+          setMissingKeywordsTotal(0);
+        });
+    }
     const interval = window.setInterval(() => {
       if (document.hidden) return;
       indexStatus().then(setStatus).catch(() => setStatus(null));
@@ -102,9 +124,20 @@ export default function AdminPage() {
           .then(setDownloads)
           .catch(() => setDownloads([]));
       }
+      if (tab === 3) {
+        fetchMissingKeywords(missingKeywordsLimit, missingKeywordsPage * missingKeywordsLimit)
+          .then((data) => {
+            setMissingKeywords(data.items);
+            setMissingKeywordsTotal(data.total);
+          })
+          .catch(() => {
+            setMissingKeywords([]);
+            setMissingKeywordsTotal(0);
+          });
+      }
     }, 15000);
     return () => window.clearInterval(interval);
-  }, [tab, downloadsPage]);
+  }, [tab, downloadsPage, missingKeywordsPage]);
 
   const run = status?.run ?? null;
   const previewProgress = Math.round(((preview?.progress ?? 0) * 100) || 0);
@@ -374,6 +407,7 @@ export default function AdminPage() {
         <Tab label="Пользователи" />
         <Tab label="Аудит" />
         <Tab label="Downloads" />
+        <Tab label="Keywords" />
       </Tabs>
       {tab === 2 ? (
         <Paper>
@@ -427,6 +461,141 @@ export default function AdminPage() {
               onClick={() => setDownloadsPage((prev) => prev + 1)}
             >
               Вперед
+            </Button>
+          </Stack>
+        </Paper>
+      ) : tab === 3 ? (
+        <Paper>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={2}
+            alignItems="center"
+            sx={{ p: 2 }}
+          >
+            <Typography variant="body2">
+              Missing keywords: {missingKeywordsTotal}
+            </Typography>
+            {missingKeywordsBaseline !== null && (
+              <Typography variant="body2">
+                Remaining: {missingKeywordsTotal} / {missingKeywordsBaseline}
+              </Typography>
+            )}
+            {missingKeywordsQueued !== null && (
+              <Typography variant="body2">Queued: {missingKeywordsQueued}</Typography>
+            )}
+            <Button
+              variant="outlined"
+              onClick={async () => {
+                setMissingKeywordsBusy(true);
+                try {
+                  const data = await fetchMissingKeywords(
+                    missingKeywordsLimit,
+                    missingKeywordsPage * missingKeywordsLimit
+                  );
+                  setMissingKeywords(data.items);
+                  setMissingKeywordsTotal(data.total);
+                } finally {
+                  setMissingKeywordsBusy(false);
+                }
+              }}
+              disabled={missingKeywordsBusy}
+            >
+              Refresh list
+            </Button>
+            <Button
+              variant="contained"
+              onClick={async () => {
+                setMissingKeywordsRescanBusy(true);
+                try {
+                  if (missingKeywordsBaseline === null) {
+                    setMissingKeywordsBaseline(missingKeywordsTotal);
+                  }
+                  const result = await rescanMissingKeywords();
+                  if (typeof result.queued === "number") {
+                    setMissingKeywordsQueued(result.queued);
+                  }
+                } finally {
+                  setMissingKeywordsRescanBusy(false);
+                }
+              }}
+              disabled={missingKeywordsRescanBusy}
+            >
+              Rescan missing keywords
+            </Button>
+          </Stack>
+          {missingKeywordsBaseline !== null && (
+            <Box sx={{ px: 2, pb: 2 }}>
+              <LinearProgress
+                variant="determinate"
+                value={
+                  missingKeywordsBaseline === 0
+                    ? 100
+                    : Math.min(
+                        100,
+                        Math.round(
+                          ((missingKeywordsBaseline - missingKeywordsTotal) /
+                            missingKeywordsBaseline) *
+                            100
+                        )
+                      )
+                }
+                sx={{ height: 8, borderRadius: 999 }}
+              />
+            </Box>
+          )}
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableCell>Preview</TableCell>
+                <TableCell>Filename</TableCell>
+                <TableCell>Path</TableCell>
+                <TableCell>MTime</TableCell>
+                <TableCell align="right">Size (KB)</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {missingKeywords.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>
+                    <Box
+                      component="img"
+                      src={withAccessToken(`/api/files/${row.id}/preview?size=thumb`)}
+                      alt={row.filename || row.id}
+                      sx={{ width: 56, height: 40, objectFit: "contain", borderRadius: 1 }}
+                    />
+                  </TableCell>
+                  <TableCell>{row.filename}</TableCell>
+                  <TableCell>{row.original_key}</TableCell>
+                  <TableCell>{new Date(row.mtime).toLocaleString()}</TableCell>
+                  <TableCell align="right">{Math.round(row.size_bytes / 1024)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <Stack
+            direction="row"
+            spacing={2}
+            alignItems="center"
+            sx={{ p: 2, justifyContent: "flex-end" }}
+          >
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={missingKeywordsPage === 0}
+              onClick={() => setMissingKeywordsPage((prev) => Math.max(0, prev - 1))}
+            >
+              Back
+            </Button>
+            <Typography variant="body2">
+              Page {missingKeywordsPage + 1}
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={(missingKeywordsPage + 1) * missingKeywordsLimit >= missingKeywordsTotal}
+              onClick={() => setMissingKeywordsPage((prev) => prev + 1)}
+            >
+              Next
             </Button>
           </Stack>
         </Paper>

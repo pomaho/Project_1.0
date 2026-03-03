@@ -108,3 +108,16 @@ class DownloadLogOut(BaseModel):
     original_key: str
     ip: str
     created_at: datetime
+
+
+class MissingKeywordItem(BaseModel):
+    id: str
+    filename: str
+    original_key: str
+    mtime: datetime
+    size_bytes: int
+
+
+class MissingKeywordResponse(BaseModel):
+    total: int
+    items: List[MissingKeywordItem]

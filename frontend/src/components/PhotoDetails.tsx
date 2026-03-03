@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import { withAccessToken } from "../api/client";
 import { getDownloadToken, getFile } from "../api/files";
 import { extractTerms, highlightText } from "../utils/highlight";
+import { useAuth } from "../auth";
 
 export default function PhotoDetails({
   fileId,
@@ -36,6 +37,8 @@ export default function PhotoDetails({
   const [copyMessage, setCopyMessage] = useState("");
   const [keywords, setKeywords] = useState<string[]>([]);
   const [file, setFile] = useState<Awaited<ReturnType<typeof getFile>> | null>(null);
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
 
   useEffect(() => {
     if (!open || !fileId) return;
@@ -56,9 +59,15 @@ export default function PhotoDetails({
   const meta = useMemo(() => {
     if (!file) return [];
     const shotAt = file.shot_at ? new Date(file.shot_at).toLocaleString() : "—";
-    return [
+    const base = [
       { label: "Тайтл", value: file.title ?? "—" },
       { label: "Описание", value: file.description ?? "—" },
+    ];
+    if (!isAdmin) {
+      return base;
+    }
+    return [
+      ...base,
       { label: "Файл", value: file.filename },
       { label: "Путь", value: file.original_key },
       { label: "Размер", value: `${Math.round(file.size_bytes / 1024)} KB` },
@@ -66,7 +75,7 @@ export default function PhotoDetails({
       { label: "Дата съемки", value: shotAt },
       { label: "Ориентация", value: file.orientation },
     ];
-  }, [file]);
+  }, [file, isAdmin]);
 
   const terms = useMemo(() => extractTerms(query), [query]);
   const shareUrl = useMemo(() => {
