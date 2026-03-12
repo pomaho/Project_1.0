@@ -33,6 +33,8 @@ ASYNC_CHUNK_SIZE = 1000
 SHOT_AT_STATUS_KEY = "metadata:shot_at:status"
 SHOT_AT_LOCK_KEY = "metadata:shot_at:lock"
 SHOT_AT_COUNTERS_KEY = "metadata:shot_at:counters"
+METADATA_ENQUEUE_PREFIX = "metadata:extract:queued"
+METADATA_ENQUEUE_TTL_SECONDS = 60 * 60
 
 
 def _normalize_path(path: str) -> str:
@@ -49,6 +51,24 @@ def _normalize_path(path: str) -> str:
 
 def _cancel_key(run_id: str) -> str:
     return f"{INDEX_CANCEL_PREFIX}:{run_id}"
+
+
+def _metadata_enqueue_key(file_id: str) -> str:
+    return f"{METADATA_ENQUEUE_PREFIX}:{file_id}"
+
+
+def enqueue_extract_metadata(file_id: str) -> bool:
+    client = get_redis()
+    key = _metadata_enqueue_key(file_id)
+    if not client.set(key, "1", nx=True, ex=METADATA_ENQUEUE_TTL_SECONDS):
+        return False
+    extract_metadata_task.delay(file_id)
+    return True
+
+
+def clear_extract_metadata_enqueue(file_id: str) -> None:
+    client = get_redis()
+    client.delete(_metadata_enqueue_key(file_id))
 
 
 def is_preview_exclusive() -> bool:
@@ -175,6 +195,7 @@ def _count_missing_metadata(session: Session) -> int:
     return (
         session.query(models.File.id)
         .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+        .distinct()
         .filter(
             models.File.deleted_at.is_(None),
             (models.FileKeyword.file_id.is_(None))
@@ -330,7 +351,7 @@ def scan_storage_task(run_id: str | None = None) -> dict:
                     )
                     session.add(file_row)
                     session.flush()
-                    extract_metadata_task.delay(file_row.id)
+                    enqueue_extract_metadata(file_row.id)
                     created += 1
                 else:
                     file_id, mtime, size, deleted_at = existing_row
@@ -344,7 +365,7 @@ def scan_storage_task(run_id: str | None = None) -> dict:
                                 "updated_at": datetime.utcnow(),
                             }
                         )
-                        extract_metadata_task.delay(file_id)
+                        enqueue_extract_metadata(file_id)
                         upsert_search_doc_task.delay(file_id)
                         restored += 1
                     elif current_mtime != mtime or stat.st_size != size:
@@ -355,13 +376,13 @@ def scan_storage_task(run_id: str | None = None) -> dict:
                                 "updated_at": datetime.utcnow(),
                             }
                         )
-                        extract_metadata_task.delay(file_id)
+                        enqueue_extract_metadata(file_id)
                         updated += 1
                     else:
                         if file_id in missing_keywords_ids:
-                            extract_metadata_task.delay(file_id)
+                            enqueue_extract_metadata(file_id)
                         elif file_id in missing_text_ids:
-                            extract_metadata_task.delay(file_id)
+                            enqueue_extract_metadata(file_id)
 
                 if run_id and scanned - last_flush >= 500:
                     session.query(models.IndexRun).filter(models.IndexRun.id == run_id).update(
@@ -430,6 +451,7 @@ def scan_storage_task(run_id: str | None = None) -> dict:
 @celery_app.task(name="extract_metadata")
 def extract_metadata_task(file_id: str) -> dict:
     if is_preview_exclusive():
+        clear_extract_metadata_enqueue(file_id)
         extract_metadata_task.apply_async(
             args=[file_id],
             countdown=settings.preview_exclusive_retry_seconds,
@@ -488,6 +510,7 @@ def extract_metadata_task(file_id: str) -> dict:
         upsert_search_doc_task.delay(file_row.id)
         return {"status": "ok", "added": added, "removed": removed}
     finally:
+        clear_extract_metadata_enqueue(file_id)
         session.close()
 
 
@@ -690,6 +713,7 @@ def queue_missing_metadata_task() -> dict:
         rows = (
             session.query(models.File.id)
             .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+            .distinct()
             .filter(
                 models.File.deleted_at.is_(None),
                 (models.FileKeyword.file_id.is_(None))
@@ -699,8 +723,8 @@ def queue_missing_metadata_task() -> dict:
             .all()
         )
         for (file_id,) in rows:
-            extract_metadata_task.delay(file_id)
-            queued += 1
+            if enqueue_extract_metadata(file_id):
+                queued += 1
         return {"status": "ok", "queued": queued}
     finally:
         session.close()
@@ -717,12 +741,13 @@ def queue_missing_keywords_task() -> dict:
         rows = (
             session.query(models.File.id)
             .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+            .distinct()
             .filter(models.File.deleted_at.is_(None), models.FileKeyword.file_id.is_(None))
             .all()
         )
         for (file_id,) in rows:
-            extract_metadata_task.delay(file_id)
-            queued += 1
+            if enqueue_extract_metadata(file_id):
+                queued += 1
         return {"status": "ok", "queued": queued}
     finally:
         session.close()

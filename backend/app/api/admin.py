@@ -40,7 +40,7 @@ from app.tasks import (
     set_shot_at_status,
     reset_shot_at_state,
     set_reindex_status,
-    extract_metadata_task,
+    enqueue_extract_metadata,
 )
 
 router = APIRouter()
@@ -311,13 +311,14 @@ def rescan_missing_keywords(
     rows = (
         db.query(models.File.id)
         .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+        .distinct()
         .filter(models.File.deleted_at.is_(None), models.FileKeyword.file_id.is_(None))
         .yield_per(1000)
     )
     queued = 0
     for (file_id,) in rows:
-        extract_metadata_task.delay(file_id)
-        queued += 1
+        if enqueue_extract_metadata(file_id):
+            queued += 1
     log_action(
         db,
         user_id=admin.id,
