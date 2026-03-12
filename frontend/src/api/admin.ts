@@ -220,3 +220,13 @@ export async function rescanMissingKeywords(): Promise<{ status: string; queued?
     method: "POST",
   });
 }
+
+export type MissingMetadataSummary = {
+  missing_keywords: number;
+  missing_text: number;
+  missing_shot_at: number;
+};
+
+export async function fetchMissingMetadataSummary(): Promise<MissingMetadataSummary> {
+  return apiFetch<MissingMetadataSummary>("/admin/metadata/missing-summary");
+}

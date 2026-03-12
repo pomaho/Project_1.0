@@ -121,3 +121,8 @@ class MissingKeywordItem(BaseModel):
 class MissingKeywordResponse(BaseModel):
     total: int
     items: List[MissingKeywordItem]
+
+class MissingMetadataSummary(BaseModel):
+    missing_keywords: int
+    missing_text: int
+    missing_shot_at: int

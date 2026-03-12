@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app import models
@@ -14,6 +14,7 @@ from app.schemas import (
     DownloadLogOut,
     MissingKeywordItem,
     MissingKeywordResponse,
+    MissingMetadataSummary,
     UserCreate,
     UserOut,
     UserUpdate,
@@ -28,7 +29,6 @@ from app.tasks import (
     request_index_cancel,
     cleanup_orphan_previews_task,
     cancel_preview_tasks,
-    queue_missing_metadata_task,
     queue_missing_previews_task,
     refresh_shot_at_task,
     refresh_previews_cycle,
@@ -44,6 +44,38 @@ from app.tasks import (
 )
 
 router = APIRouter()
+
+def _missing_text(column) -> object:
+    return func.length(func.trim(func.coalesce(column, ""))) == 0
+
+
+def _missing_metadata_counts(db: Session) -> dict:
+    missing_keywords = (
+        db.query(models.File.id)
+        .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
+        .filter(models.File.deleted_at.is_(None), models.FileKeyword.file_id.is_(None))
+        .distinct()
+        .count()
+    )
+    missing_text = (
+        db.query(models.File.id)
+        .filter(
+            models.File.deleted_at.is_(None),
+            _missing_text(models.File.title) | _missing_text(models.File.description),
+        )
+        .count()
+    )
+    missing_shot_at = (
+        db.query(models.File.id)
+        .filter(models.File.deleted_at.is_(None), models.File.shot_at.is_(None))
+        .count()
+    )
+    return {
+        "missing_keywords": missing_keywords,
+        "missing_text": missing_text,
+        "missing_shot_at": missing_shot_at,
+    }
+
 
 
 def _preview_counts(db: Session) -> dict:
@@ -78,7 +110,6 @@ def refresh_all(
     db.add(run)
     db.commit()
     scan_storage_task.delay(run.id)
-    queue_missing_metadata_task.delay()
     set_reindex_status(
         {
             "status": "waiting_metadata",
@@ -239,6 +270,11 @@ def reset_shot_at_status(
     db.commit()
     return {"status": "idle"}
 
+
+
+@router.get("/metadata/missing-summary", response_model=MissingMetadataSummary)
+def missing_metadata_summary(_: models.User = Depends(require_admin), db: Session = Depends(get_db)) -> MissingMetadataSummary:
+    return MissingMetadataSummary(**_missing_metadata_counts(db))
 
 @router.get("/metadata/shot-at/status")
 def shot_at_status(_: models.User = Depends(require_admin)) -> dict:
@@ -604,4 +640,8 @@ def download_log(
         if len(items) >= limit:
             break
     return items
+
+
+
+
 

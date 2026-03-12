@@ -29,6 +29,7 @@ import {
   OrphanPreviewStatus,
   ShotAtStatus,
   MissingKeywordItem,
+  MissingMetadataSummary,
   cancelIndex,
   cleanupOrphanPreviews,
   createUser,
@@ -51,6 +52,7 @@ import {
   refreshAll,
   updateUser,
   fetchMissingKeywords,
+  fetchMissingMetadataSummary,
   rescanMissingKeywords,
 } from "../api/admin";
 import { useAuth } from "../auth";
@@ -74,6 +76,7 @@ export default function AdminPage() {
   const [reindex, setReindex] = useState<ReindexStatus | null>(null);
   const [shotAt, setShotAt] = useState<ShotAtStatus | null>(null);
   const [missingKeywords, setMissingKeywords] = useState<MissingKeywordItem[]>([]);
+  const [missingMetaSummary, setMissingMetaSummary] = useState<MissingMetadataSummary | null>(null);
   const [missingKeywordsTotal, setMissingKeywordsTotal] = useState(0);
   const [missingKeywordsPage, setMissingKeywordsPage] = useState(0);
   const missingKeywordsLimit = 50;
@@ -101,6 +104,7 @@ export default function AdminPage() {
     orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
     reindexStatus().then(setReindex).catch(() => setReindex(null));
     shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
+    fetchMissingMetadataSummary().then(setMissingMetaSummary).catch(() => setMissingMetaSummary(null));
     if (tab === 3) {
       fetchMissingKeywords(missingKeywordsLimit, missingKeywordsPage * missingKeywordsLimit)
         .then((data) => {
@@ -119,6 +123,7 @@ export default function AdminPage() {
       orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
       reindexStatus().then(setReindex).catch(() => setReindex(null));
       shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
+      fetchMissingMetadataSummary().then(setMissingMetaSummary).catch(() => setMissingMetaSummary(null));
       if (tab === 2) {
         fetchDownloads(downloadsLimit, downloadsPage * downloadsLimit)
           .then(setDownloads)
@@ -284,6 +289,11 @@ export default function AdminPage() {
           <Typography variant="body2">
             Реиндекс: {reindex?.status ?? "—"} • Обработано: {reindex?.count ?? "—"}
           </Typography>
+        <Box sx={{ mt: 1 }}>
+          <Typography variant="body2">
+            Missing metadata: keywords {missingMetaSummary?.missing_keywords ?? "�"} � title/description {missingMetaSummary?.missing_text ?? "�"} � shot_at {missingMetaSummary?.missing_shot_at ?? "�"}
+          </Typography>
+        </Box>
         </Box>
         <Box sx={{ mt: 2 }}>
           <Typography variant="body2" sx={{ mb: 1 }}>

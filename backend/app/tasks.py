@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import models
@@ -191,6 +192,10 @@ def _reindex_incr_completed(count: int) -> None:
     set_reindex_status(status)
 
 
+def _missing_text(column) -> object:
+    return func.length(func.trim(func.coalesce(column, ""))) == 0
+
+
 def _count_missing_metadata(session: Session) -> int:
     return (
         session.query(models.File.id)
@@ -199,8 +204,8 @@ def _count_missing_metadata(session: Session) -> int:
         .filter(
             models.File.deleted_at.is_(None),
             (models.FileKeyword.file_id.is_(None))
-            | (models.File.title.is_(None))
-            | (models.File.description.is_(None)),
+            | _missing_text(models.File.title)
+            | _missing_text(models.File.description),
         )
         .count()
     )
@@ -286,7 +291,7 @@ def scan_storage_task(run_id: str | None = None) -> dict:
             row.id
             for row in session.query(models.File.id).filter(
                 models.File.deleted_at.is_(None),
-                (models.File.title.is_(None)) | (models.File.description.is_(None)),
+                _missing_text(models.File.title) | _missing_text(models.File.description),
             )
         }
         seen_keys: set[str] = set()
@@ -424,6 +429,7 @@ def scan_storage_task(run_id: str | None = None) -> dict:
         session.commit()
         if run_id:
             _clear_cancelled(run_id)
+        queue_missing_metadata_task.delay()
         # Cleanup previews for deleted files after each rescan
         gc_previews_task.delay()
         return {
@@ -717,8 +723,8 @@ def queue_missing_metadata_task() -> dict:
             .filter(
                 models.File.deleted_at.is_(None),
                 (models.FileKeyword.file_id.is_(None))
-                | (models.File.title.is_(None))
-                | (models.File.description.is_(None)),
+                | _missing_text(models.File.title)
+                | _missing_text(models.File.description),
             )
             .all()
         )
@@ -1221,4 +1227,9 @@ def cleanup_orphan_previews_task() -> dict:
         }
     finally:
         session.close()
+
+
+
+
+
 
