@@ -11,6 +11,7 @@ from app.db import get_db
 from app.deps import require_admin
 from app.schemas import (
     AuditLogOut,
+    CeleryStatus,
     DownloadLogOut,
     MissingKeywordItem,
     MissingKeywordResponse,
@@ -25,6 +26,7 @@ from app.tasks import (
     get_preview_status,
     get_reindex_status,
     get_shot_at_status,
+    get_celery_status,
     reindex_after_metadata_task,
     request_index_cancel,
     cleanup_orphan_previews_task,
@@ -275,6 +277,11 @@ def reset_shot_at_status(
 @router.get("/metadata/missing-summary", response_model=MissingMetadataSummary)
 def missing_metadata_summary(_: models.User = Depends(require_admin), db: Session = Depends(get_db)) -> MissingMetadataSummary:
     return MissingMetadataSummary(**_missing_metadata_counts(db))
+
+
+@router.get("/celery/status", response_model=CeleryStatus)
+def celery_status(_: models.User = Depends(require_admin)) -> CeleryStatus:
+    return CeleryStatus(**get_celery_status())
 
 @router.get("/metadata/shot-at/status")
 def shot_at_status(_: models.User = Depends(require_admin)) -> dict:

@@ -230,3 +230,28 @@ export type MissingMetadataSummary = {
 export async function fetchMissingMetadataSummary(): Promise<MissingMetadataSummary> {
   return apiFetch<MissingMetadataSummary>("/admin/metadata/missing-summary");
 }
+
+export type CeleryTaskBreakdown = {
+  task: string;
+  count: number;
+};
+
+export type CeleryStatus = {
+  status: string;
+  queue_length: number;
+  active_total: number;
+  reserved_total: number;
+  scheduled_total: number;
+  active: CeleryTaskBreakdown[];
+  reserved: CeleryTaskBreakdown[];
+  scheduled: CeleryTaskBreakdown[];
+  queue_sample_size: number;
+  queue_head: CeleryTaskBreakdown[];
+  active_duplicate_overflows: CeleryTaskBreakdown[];
+  queue_head_duplicate_overflows: CeleryTaskBreakdown[];
+  updated_at: string;
+};
+
+export async function fetchCeleryStatus(): Promise<CeleryStatus> {
+  return apiFetch<CeleryStatus>("/admin/celery/status");
+}

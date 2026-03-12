@@ -60,7 +60,7 @@ export default function PhotoDetails({
     if (!file) return [];
     const shotAt = file.shot_at ? new Date(file.shot_at).toLocaleString() : "—";
     const base = [
-      { label: "Тайтл", value: file.title ?? "—" },
+      { label: "Заголовок", value: file.title ?? "—" },
       { label: "Описание", value: file.description ?? "—" },
     ];
     if (!isAdmin) {
@@ -154,7 +154,7 @@ export default function PhotoDetails({
               </Stack>
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                  Keywords
+                  Ключевые слова
                 </Typography>
                 <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
                   {keywords.map((kw) => (

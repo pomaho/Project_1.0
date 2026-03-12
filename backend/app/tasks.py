@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
+import json
 import mimetypes
 import os
-import json
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -173,6 +175,99 @@ def get_reindex_status() -> dict | None:
         return json.loads(raw)
     except json.JSONDecodeError:
         return None
+
+
+def _task_arg0(task: dict) -> str | None:
+    args = task.get("args")
+    if isinstance(args, (list, tuple)):
+        return str(args[0]) if args else None
+    if isinstance(args, str):
+        stripped = args.strip()
+        if stripped.startswith("(") and stripped.endswith(",)"):
+            return stripped[1:-2].strip("'\"")
+    return None
+
+
+def _decode_queue_message(raw: str) -> tuple[str | None, str | None]:
+    try:
+        payload = json.loads(raw)
+        task_name = (payload.get("headers") or {}).get("task")
+        body_raw = payload.get("body")
+        if not body_raw:
+            return task_name, None
+        decoded = base64.b64decode(body_raw).decode("utf-8")
+        body = json.loads(decoded)
+        args = body[0] if body else []
+        return task_name, str(args[0]) if args else None
+    except Exception:
+        return None, None
+
+
+def _counter_payload(counter: Counter) -> list[dict]:
+    return [{"task": task, "count": count} for task, count in counter.most_common()]
+
+
+def get_celery_status(queue_sample_size: int = 1000) -> dict:
+    client = get_redis()
+    queue_length = int(client.llen("celery"))
+    sample_size = min(queue_sample_size, queue_length)
+    head_counts: Counter = Counter()
+    head_duplicates: Counter = Counter()
+    if sample_size:
+        pair_counts: Counter = Counter()
+        for raw in client.lrange("celery", 0, sample_size - 1):
+            task_name, arg0 = _decode_queue_message(raw)
+            if not task_name:
+                continue
+            head_counts[task_name] += 1
+            pair_counts[(task_name, arg0)] += 1
+        for (task_name, _), count in pair_counts.items():
+            if count > 1:
+                head_duplicates[task_name] += count - 1
+
+    inspect = celery_app.control.inspect(timeout=1)
+    active_raw = inspect.active() or {}
+    reserved_raw = inspect.reserved() or {}
+    scheduled_raw = inspect.scheduled() or {}
+
+    def summarize(tasks_by_worker: dict, mode: str = "plain") -> tuple[Counter, int, Counter]:
+        counts: Counter = Counter()
+        duplicates: Counter = Counter()
+        pair_counts: Counter = Counter()
+        total = 0
+        for tasks in tasks_by_worker.values():
+            for task in tasks or []:
+                request = task if mode == "plain" else (task.get("request") or {})
+                task_name = request.get("name") or task.get("name") or "unknown"
+                counts[task_name] += 1
+                total += 1
+                arg0 = _task_arg0(request)
+                pair_counts[(task_name, arg0)] += 1
+        for (task_name, _), count in pair_counts.items():
+            if count > 1:
+                duplicates[task_name] += count - 1
+        return counts, total, duplicates
+
+    active_counts, active_total, active_duplicates = summarize(active_raw)
+    reserved_counts, reserved_total, _ = summarize(reserved_raw)
+    scheduled_counts, scheduled_total, _ = summarize(scheduled_raw, mode="scheduled")
+
+    status = "running" if queue_length or active_total or reserved_total or scheduled_total else "idle"
+    return {
+        "status": status,
+        "queue_length": queue_length,
+        "active_total": active_total,
+        "reserved_total": reserved_total,
+        "scheduled_total": scheduled_total,
+        "active": _counter_payload(active_counts),
+        "reserved": _counter_payload(reserved_counts),
+        "scheduled": _counter_payload(scheduled_counts),
+        "queue_sample_size": sample_size,
+        "queue_head": _counter_payload(head_counts),
+        "active_duplicate_overflows": _counter_payload(active_duplicates),
+        "queue_head_duplicate_overflows": _counter_payload(head_duplicates),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
 
 
 def _reindex_incr_completed(count: int) -> None:
@@ -1227,6 +1322,7 @@ def cleanup_orphan_previews_task() -> dict:
         }
     finally:
         session.close()
+
 
 
 

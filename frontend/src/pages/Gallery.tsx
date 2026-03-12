@@ -1,4 +1,4 @@
-import {
+﻿import {
   AppBar,
   Box,
   Chip,
@@ -21,11 +21,7 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import {
-  searchPhotos,
-  suggestKeywords,
-  type SearchResponse,
-} from "../api/search";
+import { searchPhotos, suggestKeywords, type SearchResponse } from "../api/search";
 import { getDownloadToken } from "../api/files";
 import useDebounce from "../hooks/useDebounce";
 import PhotoGrid from "../components/PhotoGrid";
@@ -48,10 +44,7 @@ export default function GalleryPage() {
 
   const searchQuery = useInfiniteQuery<SearchPage, Error, InfiniteData<SearchPage>, string[], PageParam>({
     queryKey: ["search", debounced],
-    queryFn: async ({ pageParam = { offset: 0 } }: QueryFunctionContext<
-      string[],
-      PageParam
-    >) => {
+    queryFn: async ({ pageParam = { offset: 0 } }: QueryFunctionContext<string[], PageParam>) => {
       const { offset } = pageParam;
       return searchPhotos(debounced, offset, pageSize);
     },
@@ -114,17 +107,12 @@ export default function GalleryPage() {
 
   return (
     <Box sx={{ minHeight: "100vh", backgroundColor: "#f7f1ea" }}>
-      <AppBar
-        position="sticky"
-        color="transparent"
-        elevation={0}
-        sx={{ backdropFilter: "blur(8px)" }}
-      >
+      <AppBar position="sticky" color="transparent" elevation={0} sx={{ backdropFilter: "blur(8px)" }}>
         <Toolbar>
           <Typography variant="h6" sx={{ fontWeight: 700, flexGrow: 1 }}>
             Поиск по ключевым словам
           </Typography>
-          <Chip label={user?.name || user?.email || "User"} size="small" color="secondary" />
+          <Chip label={user?.name || user?.email || "Пользователь"} size="small" color="secondary" />
           {user?.role === "admin" && (
             <Button
               variant="text"
@@ -133,7 +121,7 @@ export default function GalleryPage() {
               href="/admin"
               sx={{ ml: 2 }}
             >
-              Admin
+              Админка
             </Button>
           )}
           <Button variant="text" color="inherit" onClick={logout}>
@@ -157,7 +145,7 @@ export default function GalleryPage() {
                   setSubmittedQuery(query.trim());
                 }
               }}
-              placeholder='Поиск: "red dress" wedding OR studio -outdoor'
+              placeholder="Введите запрос"
               InputProps={{
                 ...params.InputProps,
                 startAdornment: (
@@ -167,9 +155,7 @@ export default function GalleryPage() {
                 ),
                 endAdornment: (
                   <>
-                    {searchQuery.isFetching ? (
-                      <CircularProgress color="inherit" size={18} />
-                    ) : null}
+                    {searchQuery.isFetching ? <CircularProgress color="inherit" size={18} /> : null}
                     {params.InputProps.endAdornment}
                   </>
                 ),
@@ -178,15 +164,11 @@ export default function GalleryPage() {
             />
           )}
         />
-        <Button
-          variant="contained"
-          onClick={() => setSubmittedQuery(query.trim())}
-          sx={{ mb: 3 }}
-        >
+        <Button variant="contained" onClick={() => setSubmittedQuery(query.trim())} sx={{ mb: 3 }}>
           Найти
         </Button>
         <Typography variant="body2" sx={{ mb: 2, color: "text.secondary" }}>
-          Найдено: {liveTotalFound} • Всего: {totalAll} • Показано: {totalShown}
+          Найдено: {liveTotalFound} | Всего: {totalAll} | Показано: {totalShown}
         </Typography>
         <Box sx={{ height: "calc(100% - 96px)" }}>
           <PhotoGrid

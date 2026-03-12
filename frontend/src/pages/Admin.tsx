@@ -1,6 +1,7 @@
-import {
+﻿import {
   Box,
   Button,
+  Chip,
   Container,
   Divider,
   Stack,
@@ -30,6 +31,7 @@ import {
   ShotAtStatus,
   MissingKeywordItem,
   MissingMetadataSummary,
+  CeleryStatus,
   cancelIndex,
   cleanupOrphanPreviews,
   createUser,
@@ -53,12 +55,18 @@ import {
   updateUser,
   fetchMissingKeywords,
   fetchMissingMetadataSummary,
+  fetchCeleryStatus,
   rescanMissingKeywords,
 } from "../api/admin";
 import { useAuth } from "../auth";
 import { withAccessToken } from "../api/client";
 
 const roles = ["admin", "manager", "viewer"] as const;
+const roleLabels: Record<(typeof roles)[number], string> = {
+  admin: "Администратор",
+  manager: "Менеджер",
+  viewer: "Наблюдатель",
+};
 
 export default function AdminPage() {
   const [tab, setTab] = useState(0);
@@ -77,6 +85,7 @@ export default function AdminPage() {
   const [shotAt, setShotAt] = useState<ShotAtStatus | null>(null);
   const [missingKeywords, setMissingKeywords] = useState<MissingKeywordItem[]>([]);
   const [missingMetaSummary, setMissingMetaSummary] = useState<MissingMetadataSummary | null>(null);
+  const [celery, setCelery] = useState<CeleryStatus | null>(null);
   const [missingKeywordsTotal, setMissingKeywordsTotal] = useState(0);
   const [missingKeywordsPage, setMissingKeywordsPage] = useState(0);
   const missingKeywordsLimit = 50;
@@ -105,6 +114,7 @@ export default function AdminPage() {
     reindexStatus().then(setReindex).catch(() => setReindex(null));
     shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
     fetchMissingMetadataSummary().then(setMissingMetaSummary).catch(() => setMissingMetaSummary(null));
+    fetchCeleryStatus().then(setCelery).catch(() => setCelery(null));
     if (tab === 3) {
       fetchMissingKeywords(missingKeywordsLimit, missingKeywordsPage * missingKeywordsLimit)
         .then((data) => {
@@ -124,6 +134,7 @@ export default function AdminPage() {
       reindexStatus().then(setReindex).catch(() => setReindex(null));
       shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
       fetchMissingMetadataSummary().then(setMissingMetaSummary).catch(() => setMissingMetaSummary(null));
+      fetchCeleryStatus().then(setCelery).catch(() => setCelery(null));
       if (tab === 2) {
         fetchDownloads(downloadsLimit, downloadsPage * downloadsLimit)
           .then(setDownloads)
@@ -156,6 +167,8 @@ export default function AdminPage() {
     shotAt && shotAt.total > 0
       ? Math.min(100, Math.round((shotAt.scanned / shotAt.total) * 100))
       : 0;
+  const formatTaskBreakdown = (items: { task: string; count: number }[] | undefined) =>
+    items && items.length > 0 ? items.map((item) => `${item.task}: ${item.count}`).join(" | ") : "-";
 
   const handleCreateUser = async () => {
     const payload = { ...form };
@@ -203,12 +216,12 @@ export default function AdminPage() {
       </Stack>
       <Stack direction="row" justifyContent="flex-end" sx={{ mb: 2, mt: -1 }}>
         <Typography variant="body2" sx={{ fontWeight: 600 }}>
-          {user?.name || user?.email || "User"}
+          {user?.name || user?.email || "Пользователь"}
         </Typography>
       </Stack>
       <Paper sx={{ p: 2, mb: 3 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">
-          <Typography variant="body1">Файлов в индексе: {status?.files ?? "—"}</Typography>
+          <Typography variant="body1">Файлов в индексе: {status?.files ?? "-"}</Typography>
           <Button
             variant="contained"
             onClick={async () => {
@@ -287,18 +300,59 @@ export default function AdminPage() {
         </Box>
         <Box sx={{ mt: 2 }}>
           <Typography variant="body2">
-            Реиндекс: {reindex?.status ?? "—"} • Обработано: {reindex?.count ?? "—"}
+            Реиндекс: {reindex?.status ?? "-"} | Обработано: {reindex?.count ?? "-"}
           </Typography>
         <Box sx={{ mt: 1 }}>
           <Typography variant="body2">
-            Missing metadata: keywords {missingMetaSummary?.missing_keywords ?? "�"} � title/description {missingMetaSummary?.missing_text ?? "�"} � shot_at {missingMetaSummary?.missing_shot_at ?? "�"}
+            Отсутствуют метаданные: ключевые слова {missingMetaSummary?.missing_keywords ?? "-"} | заголовок/описание {missingMetaSummary?.missing_text ?? "-"} | дата съемки {missingMetaSummary?.missing_shot_at ?? "-"}
           </Typography>
         </Box>
         </Box>
         <Box sx={{ mt: 2 }}>
+          <Stack
+            direction={{ xs: "column", md: "row" }}
+            spacing={1}
+            alignItems={{ xs: "flex-start", md: "center" }}
+          >
+            <Typography variant="body2">
+              Очередь Celery: {celery?.status ?? "-"} | Задач: {celery?.queue_length ?? "-"} | Активно:{" "}
+              {celery?.active_total ?? "-"} | В резерве: {celery?.reserved_total ?? "-"} |
+              Запланировано: {celery?.scheduled_total ?? "-"}
+            </Typography>
+            {celery?.queue_head_duplicate_overflows?.length ? (
+              <Chip
+                size="small"
+                color="warning"
+                label={`Дубли в начале очереди: ${formatTaskBreakdown(
+                  celery.queue_head_duplicate_overflows
+                )}`}
+              />
+            ) : null}
+            {celery?.active_duplicate_overflows?.length ? (
+              <Chip
+                size="small"
+                color="warning"
+                label={`Дубли в активных задачах: ${formatTaskBreakdown(
+                  celery.active_duplicate_overflows
+                )}`}
+              />
+            ) : null}
+          </Stack>
+          <Typography variant="caption" sx={{ display: "block", mt: 1 }}>
+            Активные задачи: {formatTaskBreakdown(celery?.active)}
+          </Typography>
+          <Typography variant="caption" sx={{ display: "block", mt: 0.5 }}>
+            Резерв по задачам: {formatTaskBreakdown(celery?.reserved)}
+          </Typography>
+          <Typography variant="caption" sx={{ display: "block", mt: 0.5 }}>
+            Начало очереди ({celery?.queue_sample_size ?? 0} в выборке):{" "}
+            {formatTaskBreakdown(celery?.queue_head)}
+          </Typography>
+        </Box>
+        <Box sx={{ mt: 2 }}>
           <Typography variant="body2" sx={{ mb: 1 }}>
-            Даты съемки: {shotAt?.status ?? "—"} • Обработано: {shotAt?.scanned ?? "—"} /{" "}
-            {shotAt?.total ?? "—"} • Обновлено: {shotAt?.updated ?? "—"}
+            Даты съемки: {shotAt?.status ?? "-"} | Обработано: {shotAt?.scanned ?? "-"} /{" "}
+            {shotAt?.total ?? "-"} | Обновлено: {shotAt?.updated ?? "-"}
           </Typography>
           <LinearProgress
             variant={shotAt?.total ? "determinate" : "determinate"}
@@ -309,8 +363,8 @@ export default function AdminPage() {
         {run && (
           <Box sx={{ mt: 2 }}>
             <Typography variant="body2" sx={{ mb: 1 }}>
-              Статус: {run.status} • Просканировано: {run.scanned} • Создано: {run.created} •
-              Обновлено: {run.updated} • Восстановлено: {run.restored} • Удалено: {run.deleted}
+              Статус: {run.status} | Просканировано: {run.scanned} | Создано: {run.created} |
+              Обновлено: {run.updated} | Восстановлено: {run.restored} | Удалено: {run.deleted}
             </Typography>
             {run.status === "running" ? (
               <LinearProgress sx={{ height: 8, borderRadius: 999 }} />
@@ -338,8 +392,8 @@ export default function AdminPage() {
       <Paper sx={{ p: 2, mb: 3 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">
           <Typography variant="body1">
-            Превью: {preview?.total_previews ?? "—"} • Файлов: {preview?.total_files ?? "—"} •
-            Без превью: {preview?.missing_previews ?? "—"}
+            Превью: {preview?.total_previews ?? "-"} | Файлов: {preview?.total_files ?? "-"} |
+            Без превью: {preview?.missing_previews ?? "-"}
           </Typography>
           <Button
             variant="outlined"
@@ -373,8 +427,8 @@ export default function AdminPage() {
         </Stack>
         <Box sx={{ mt: 2 }}>
           <Typography variant="body2" sx={{ mb: 1 }}>
-            Прогресс: {previewProgress}% • Раунд {preview?.round ?? 0} из{" "}
-            {preview?.max_rounds ?? 0} • Статус: {preview?.status ?? "—"}
+            Прогресс: {previewProgress}% | Раунд {preview?.round ?? 0} из{" "}
+            {preview?.max_rounds ?? 0} | Статус: {preview?.status ?? "-"}
           </Typography>
           <LinearProgress
             variant="determinate"
@@ -385,8 +439,8 @@ export default function AdminPage() {
         <Box sx={{ mt: 2 }}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">
             <Typography variant="body2">
-              Сирот: {orphans?.total_orphans ?? "—"} • Удалено: {orphans?.deleted ?? "—"} •
-              Обработано: {orphans?.processed ?? "—"} • Статус: {orphans?.status ?? "—"}
+              Сироты: {orphans?.total_orphans ?? "-"} | Удалено: {orphans?.deleted ?? "-"} |
+              Обработано: {orphans?.processed ?? "-"} | Статус: {orphans?.status ?? "-"}
             </Typography>
             <Button
               variant="outlined"
@@ -416,20 +470,20 @@ export default function AdminPage() {
       <Tabs value={tab} onChange={(_, value) => setTab(value)} sx={{ mb: 2 }}>
         <Tab label="Пользователи" />
         <Tab label="Аудит" />
-        <Tab label="Downloads" />
-        <Tab label="Keywords" />
+        <Tab label="Скачивания" />
+        <Tab label="Ключевые слова" />
       </Tabs>
       {tab === 2 ? (
         <Paper>
           <Table>
             <TableHead>
               <TableRow>
-                <TableCell>Time</TableCell>
-                <TableCell>User</TableCell>
+                <TableCell>Время</TableCell>
+                <TableCell>Пользователь</TableCell>
                 <TableCell>IP</TableCell>
-                <TableCell>Preview</TableCell>
-                <TableCell>File</TableCell>
-                <TableCell>Path</TableCell>
+                <TableCell>Превью</TableCell>
+                <TableCell>Файл</TableCell>
+                <TableCell>Путь</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -483,15 +537,15 @@ export default function AdminPage() {
             sx={{ p: 2 }}
           >
             <Typography variant="body2">
-              Missing keywords: {missingKeywordsTotal}
+              Без ключевых слов: {missingKeywordsTotal}
             </Typography>
             {missingKeywordsBaseline !== null && (
               <Typography variant="body2">
-                Remaining: {missingKeywordsTotal} / {missingKeywordsBaseline}
+                Осталось: {missingKeywordsTotal} / {missingKeywordsBaseline}
               </Typography>
             )}
             {missingKeywordsQueued !== null && (
-              <Typography variant="body2">Queued: {missingKeywordsQueued}</Typography>
+              <Typography variant="body2">В очереди: {missingKeywordsQueued}</Typography>
             )}
             <Button
               variant="outlined"
@@ -510,7 +564,7 @@ export default function AdminPage() {
               }}
               disabled={missingKeywordsBusy}
             >
-              Refresh list
+              Обновить список
             </Button>
             <Button
               variant="contained"
@@ -530,7 +584,7 @@ export default function AdminPage() {
               }}
               disabled={missingKeywordsRescanBusy}
             >
-              Rescan missing keywords
+              Пересканировать файлы без ключевых слов
             </Button>
           </Stack>
           {missingKeywordsBaseline !== null && (
@@ -556,11 +610,11 @@ export default function AdminPage() {
           <Table>
             <TableHead>
               <TableRow>
-                <TableCell>Preview</TableCell>
-                <TableCell>Filename</TableCell>
-                <TableCell>Path</TableCell>
-                <TableCell>MTime</TableCell>
-                <TableCell align="right">Size (KB)</TableCell>
+                <TableCell>Превью</TableCell>
+                <TableCell>Файл</TableCell>
+                <TableCell>Путь</TableCell>
+                <TableCell>Дата изменения</TableCell>
+                <TableCell align="right">Размер (KB)</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -594,10 +648,10 @@ export default function AdminPage() {
               disabled={missingKeywordsPage === 0}
               onClick={() => setMissingKeywordsPage((prev) => Math.max(0, prev - 1))}
             >
-              Back
+              Назад
             </Button>
             <Typography variant="body2">
-              Page {missingKeywordsPage + 1}
+              Страница {missingKeywordsPage + 1}
             </Typography>
             <Button
               size="small"
@@ -605,7 +659,7 @@ export default function AdminPage() {
               disabled={(missingKeywordsPage + 1) * missingKeywordsLimit >= missingKeywordsTotal}
               onClick={() => setMissingKeywordsPage((prev) => prev + 1)}
             >
-              Next
+              Вперед
             </Button>
           </Stack>
         </Paper>
@@ -619,7 +673,7 @@ export default function AdminPage() {
                 onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
               />
               <TextField
-                label="Email"
+                label="Почта"
                 value={form.email}
                 onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))}
               />
@@ -640,7 +694,7 @@ export default function AdminPage() {
                 >
                   {roles.map((role) => (
                     <MenuItem key={role} value={role}>
-                      {role}
+                      {roleLabels[role]}
                     </MenuItem>
                   ))}
                 </Select>
@@ -655,7 +709,7 @@ export default function AdminPage() {
               <TableHead>
                 <TableRow>
                   <TableCell>Имя</TableCell>
-                  <TableCell>Email</TableCell>
+                  <TableCell>Почта</TableCell>
                   <TableCell>Роль</TableCell>
                   <TableCell>Активен</TableCell>
                   <TableCell align="right">Действия</TableCell>
@@ -674,7 +728,7 @@ export default function AdminPage() {
                       >
                         {roles.map((role) => (
                           <MenuItem key={role} value={role}>
-                            {role}
+                            {roleLabels[role]}
                           </MenuItem>
                         ))}
                       </Select>
@@ -706,7 +760,7 @@ export default function AdminPage() {
                 <TableCell>Время</TableCell>
                 <TableCell>Пользователь</TableCell>
                 <TableCell>Действие</TableCell>
-                <TableCell>Meta</TableCell>
+                <TableCell>Метаданные</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -726,3 +780,4 @@ export default function AdminPage() {
     </Container>
   );
 }
+

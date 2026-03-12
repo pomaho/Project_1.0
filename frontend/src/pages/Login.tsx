@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Box,
@@ -51,7 +51,7 @@ export default function LoginPage() {
           </Typography>
           <Box component="form" onSubmit={handleSubmit}>
             <TextField
-              label="Email"
+              label="Почта"
               type="email"
               fullWidth
               margin="normal"

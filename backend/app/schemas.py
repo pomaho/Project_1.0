@@ -126,3 +126,23 @@ class MissingMetadataSummary(BaseModel):
     missing_keywords: int
     missing_text: int
     missing_shot_at: int
+
+class CeleryTaskBreakdown(BaseModel):
+    task: str
+    count: int
+
+
+class CeleryStatus(BaseModel):
+    status: str
+    queue_length: int
+    active_total: int
+    reserved_total: int
+    scheduled_total: int
+    active: List[CeleryTaskBreakdown]
+    reserved: List[CeleryTaskBreakdown]
+    scheduled: List[CeleryTaskBreakdown]
+    queue_sample_size: int
+    queue_head: List[CeleryTaskBreakdown]
+    active_duplicate_overflows: List[CeleryTaskBreakdown]
+    queue_head_duplicate_overflows: List[CeleryTaskBreakdown]
+    updated_at: datetime

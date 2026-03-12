@@ -90,6 +90,33 @@ def _extract_keywords(record: dict[str, Any]) -> list[str]:
 EXIFTOOL_TIMEOUT_SECONDS = 10
 
 
+def _extract_title(record: dict[str, Any]) -> Any:
+    return (
+        record.get("XMP:Title")
+        or record.get("XMP-dc:Title")
+        or record.get("IPTC:Headline")
+        or record.get("XMP:Headline")
+        or record.get("Headline")
+        or record.get("ObjectName")
+        or record.get("IPTC:ObjectName")
+        or record.get("EXIF:ImageDescription")
+        or record.get("ImageDescription")
+        or record.get("Title")
+    )
+
+
+def _extract_description(record: dict[str, Any]) -> Any:
+    return (
+        record.get("XMP:Description")
+        or record.get("XMP-dc:Description")
+        or record.get("IPTC:Caption-Abstract")
+        or record.get("Caption-Abstract")
+        or record.get("EXIF:ImageDescription")
+        or record.get("ImageDescription")
+        or record.get("Description")
+    )
+
+
 def _read_exif_record(file_path: Path) -> dict[str, Any]:
     try:
         result = subprocess.run(
@@ -121,21 +148,8 @@ def extract_metadata(path: str) -> dict[str, Any]:
 
     mime, _ = mimetypes.guess_type(file_path.name)
 
-    title = (
-        record.get("XMP:Title")
-        or record.get("XMP-dc:Title")
-        or record.get("IPTC:Headline")
-        or record.get("XMP:Headline")
-        or record.get("EXIF:ImageDescription")
-        or record.get("Title")
-    )
-    description = (
-        record.get("XMP:Description")
-        or record.get("XMP-dc:Description")
-        or record.get("IPTC:Caption-Abstract")
-        or record.get("EXIF:ImageDescription")
-        or record.get("Description")
-    )
+    title = _extract_title(record)
+    description = _extract_description(record)
 
     shot_at = _parse_exif_datetime(
         record.get("DateTimeOriginal")
@@ -159,22 +173,9 @@ def extract_metadata(path: str) -> dict[str, Any]:
             if side_keywords:
                 keywords = side_keywords
             if not title:
-                title = (
-                    side_record.get("XMP:Title")
-                    or side_record.get("XMP-dc:Title")
-                    or side_record.get("IPTC:Headline")
-                    or side_record.get("XMP:Headline")
-                    or side_record.get("EXIF:ImageDescription")
-                    or side_record.get("Title")
-                )
+                title = _extract_title(side_record)
             if not description:
-                description = (
-                    side_record.get("XMP:Description")
-                    or side_record.get("XMP-dc:Description")
-                    or side_record.get("IPTC:Caption-Abstract")
-                    or side_record.get("EXIF:ImageDescription")
-                    or side_record.get("Description")
-                )
+                description = _extract_description(side_record)
             if keywords:
                 break
 
