@@ -25,7 +25,7 @@ from app.tasks import (
     get_reindex_status,
     get_shot_at_status,
     reindex_after_metadata_task,
-    cancel_index_run,
+    request_index_cancel,
     cleanup_orphan_previews_task,
     cancel_preview_tasks,
     queue_missing_metadata_task,
@@ -400,7 +400,7 @@ def cancel_index(_: models.User = Depends(require_admin), db: Session = Depends(
     )
     if not last_run or last_run.status != models.IndexRunStatus.running:
         raise HTTPException(status_code=400, detail="No running index")
-    cancel_index_run.delay(last_run.id)
+    request_index_cancel(last_run.id)
     log_action(
         db,
         user_id=_.id,
@@ -604,3 +604,4 @@ def download_log(
         if len(items) >= limit:
             break
     return items
+

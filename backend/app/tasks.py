@@ -211,7 +211,7 @@ def _is_cancelled(run_id: str) -> bool:
     return bool(client.get(_cancel_key(run_id)))
 
 
-def _set_cancelled(run_id: str) -> None:
+def request_index_cancel(run_id: str) -> None:
     client = get_redis()
     client.set(_cancel_key(run_id), "1")
 
@@ -891,7 +891,7 @@ def reindex_after_metadata_task(run_id: str | None = None) -> dict:
 
 @celery_app.task(name="cancel_index_run")
 def cancel_index_run(run_id: str) -> dict:
-    _set_cancelled(run_id)
+    request_index_cancel(run_id)
     return {"status": "queued"}
 
 
@@ -1221,3 +1221,4 @@ def cleanup_orphan_previews_task() -> dict:
         }
     finally:
         session.close()
+
