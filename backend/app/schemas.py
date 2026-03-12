@@ -135,6 +135,7 @@ class CeleryTaskBreakdown(BaseModel):
 class CeleryStatus(BaseModel):
     status: str
     queue_length: int
+    queue_lengths: dict[str, int]
     active_total: int
     reserved_total: int
     scheduled_total: int
@@ -142,7 +143,17 @@ class CeleryStatus(BaseModel):
     reserved: List[CeleryTaskBreakdown]
     scheduled: List[CeleryTaskBreakdown]
     queue_sample_size: int
+    queue_sample_sources: List[CeleryTaskBreakdown]
     queue_head: List[CeleryTaskBreakdown]
     active_duplicate_overflows: List[CeleryTaskBreakdown]
     queue_head_duplicate_overflows: List[CeleryTaskBreakdown]
+    updated_at: datetime
+
+
+class FullRefreshStatus(BaseModel):
+    status: str
+    stage: str
+    progress: Optional[int] = None
+    stage_detail: Optional[str] = None
+    started_at: Optional[datetime] = None
     updated_at: datetime

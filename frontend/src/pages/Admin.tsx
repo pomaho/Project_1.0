@@ -26,6 +26,7 @@ import {
   AdminUser,
   AuditLog,
   DownloadLog,
+  FullRefreshStatus,
   IndexRunStatus,
   OrphanPreviewStatus,
   ShotAtStatus,
@@ -38,20 +39,18 @@ import {
   deleteUser,
   fetchAudit,
   fetchDownloads,
+  fetchFullRefreshStatus,
   indexStatus,
   listUsers,
   orphanPreviewStatus,
-  previewStatus,
-  PreviewStatus,
   ReindexStatus,
   reindexStatus,
-  reindexSearch,
+  previewStatus,
+  PreviewStatus,
   shotAtStatus,
   resetShotAt,
-  refreshPreviews,
-  restartPreviews,
-  refreshShotAt,
   refreshAll,
+  restartPreviews,
   updateUser,
   fetchMissingKeywords,
   fetchMissingMetadataSummary,
@@ -79,6 +78,7 @@ export default function AdminPage() {
   const [status, setStatus] = useState<{ files: number; run?: IndexRunStatus | null } | null>(
     null
   );
+  const [fullRefresh, setFullRefresh] = useState<FullRefreshStatus | null>(null);
   const [preview, setPreview] = useState<PreviewStatus | null>(null);
   const [orphans, setOrphans] = useState<OrphanPreviewStatus | null>(null);
   const [reindex, setReindex] = useState<ReindexStatus | null>(null);
@@ -93,8 +93,6 @@ export default function AdminPage() {
   const [missingKeywordsQueued, setMissingKeywordsQueued] = useState<number | null>(null);
   const [form, setForm] = useState({ name: "", email: "", password: "", role: "viewer" });
   const [refreshBusy, setRefreshBusy] = useState(false);
-  const [reindexBusy, setReindexBusy] = useState(false);
-  const [previewBusy, setPreviewBusy] = useState(false);
   const [restartPreviewBusy, setRestartPreviewBusy] = useState(false);
   const [shotAtBusy, setShotAtBusy] = useState(false);
   const [orphanBusy, setOrphanBusy] = useState(false);
@@ -109,6 +107,7 @@ export default function AdminPage() {
       .then(setDownloads)
       .catch(() => setDownloads([]));
     indexStatus().then(setStatus).catch(() => setStatus(null));
+    fetchFullRefreshStatus().then(setFullRefresh).catch(() => setFullRefresh(null));
     previewStatus().then(setPreview).catch(() => setPreview(null));
     orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
     reindexStatus().then(setReindex).catch(() => setReindex(null));
@@ -129,6 +128,7 @@ export default function AdminPage() {
     const interval = window.setInterval(() => {
       if (document.hidden) return;
       indexStatus().then(setStatus).catch(() => setStatus(null));
+      fetchFullRefreshStatus().then(setFullRefresh).catch(() => setFullRefresh(null));
       previewStatus().then(setPreview).catch(() => setPreview(null));
       orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
       reindexStatus().then(setReindex).catch(() => setReindex(null));
@@ -169,6 +169,16 @@ export default function AdminPage() {
       : 0;
   const formatTaskBreakdown = (items: { task: string; count: number }[] | undefined) =>
     items && items.length > 0 ? items.map((item) => `${item.task}: ${item.count}`).join(" | ") : "-";
+  const queueLengthsText = celery?.queue_lengths
+    ? Object.entries(celery.queue_lengths)
+        .filter(([, count]) => count > 0)
+        .map(([name, count]) => `${name}: ${count}`)
+        .join(" | ")
+    : "-";
+  const metadataSearchQueue =
+    (celery?.queue_head ?? []).filter((item) =>
+      ["extract_metadata", "upsert_search_doc", "flush_upsert_search_docs"].includes(item.task)
+    );
 
   const handleCreateUser = async () => {
     const payload = { ...form };
@@ -234,21 +244,7 @@ export default function AdminPage() {
             }}
             disabled={refreshBusy}
           >
-            Обновить базу
-          </Button>
-          <Button
-            variant="outlined"
-            onClick={async () => {
-              setReindexBusy(true);
-              try {
-                await reindexSearch();
-              } finally {
-                setReindexBusy(false);
-              }
-            }}
-            disabled={reindexBusy}
-          >
-            Переиндексировать поиск
+            Обновить базу полностью
           </Button>
           <Button
             variant="outlined"
@@ -264,20 +260,6 @@ export default function AdminPage() {
             disabled={cancelBusy || run?.status !== "running"}
           >
             Остановить скан
-          </Button>
-          <Button
-            variant="outlined"
-            onClick={async () => {
-              setShotAtBusy(true);
-              try {
-                await refreshShotAt();
-              } finally {
-                setShotAtBusy(false);
-              }
-            }}
-            disabled={shotAtBusy}
-          >
-            Перечитать даты съемки
           </Button>
         </Stack>
         <Box sx={{ mt: 1 }}>
@@ -299,6 +281,26 @@ export default function AdminPage() {
           </Button>
         </Box>
         <Box sx={{ mt: 2 }}>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Полное обновление: {fullRefresh?.status ?? "-"} | Этап: {fullRefresh?.stage_detail ?? "-"}
+          </Typography>
+          <LinearProgress
+            variant={
+              fullRefresh?.status === "running" && typeof fullRefresh?.progress !== "number"
+                ? "indeterminate"
+                : "determinate"
+            }
+            value={
+              typeof fullRefresh?.progress === "number"
+                ? fullRefresh.progress
+                : fullRefresh?.status === "completed"
+                  ? 100
+                  : 0
+            }
+            sx={{ height: 8, borderRadius: 999 }}
+          />
+        </Box>
+        <Box sx={{ mt: 2 }}>
           <Typography variant="body2">
             Реиндекс: {reindex?.status ?? "-"} | Обработано: {reindex?.count ?? "-"}
           </Typography>
@@ -307,6 +309,18 @@ export default function AdminPage() {
             Отсутствуют метаданные: ключевые слова {missingMetaSummary?.missing_keywords ?? "-"} | заголовок/описание {missingMetaSummary?.missing_text ?? "-"} | дата съемки {missingMetaSummary?.missing_shot_at ?? "-"}
           </Typography>
         </Box>
+        </Box>
+        <Box sx={{ mt: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            Очередь метаданных и поиска:{" "}
+            {formatTaskBreakdown(metadataSearchQueue.length ? metadataSearchQueue : undefined)}
+          </Typography>
+          <Typography variant="caption" sx={{ display: "block", mt: 0.5 }}>
+            Очереди Redis: {queueLengthsText}
+          </Typography>
+          <Typography variant="caption" sx={{ display: "block", mt: 0.5 }}>
+            Источник выборки: {formatTaskBreakdown(celery?.queue_sample_sources)}
+          </Typography>
         </Box>
         <Box sx={{ mt: 2 }}>
           <Stack
@@ -396,20 +410,6 @@ export default function AdminPage() {
             Без превью: {preview?.missing_previews ?? "-"}
           </Typography>
           <Button
-            variant="outlined"
-            onClick={async () => {
-              setPreviewBusy(true);
-              try {
-                await refreshPreviews();
-              } finally {
-                setPreviewBusy(false);
-              }
-            }}
-            disabled={previewBusy}
-          >
-            Обновить превью
-          </Button>
-          <Button
             variant="contained"
             color="warning"
             onClick={async () => {
@@ -422,7 +422,7 @@ export default function AdminPage() {
             }}
             disabled={restartPreviewBusy}
           >
-            Перезапустить превью
+            Перезапустить генерацию превью
           </Button>
         </Stack>
         <Box sx={{ mt: 2 }}>

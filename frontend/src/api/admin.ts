@@ -93,10 +93,25 @@ export type ReindexStatus = {
   count: number;
   updated_at: string;
   started_at?: string;
+  total?: number;
+  completed?: number;
 };
 
 export async function reindexStatus(): Promise<ReindexStatus> {
   return apiFetch<ReindexStatus>("/admin/index/reindex/status");
+}
+
+export type FullRefreshStatus = {
+  status: string;
+  stage: string;
+  progress?: number | null;
+  stage_detail?: string | null;
+  started_at?: string | null;
+  updated_at: string;
+};
+
+export async function fetchFullRefreshStatus(): Promise<FullRefreshStatus> {
+  return apiFetch<FullRefreshStatus>("/admin/index/full-refresh/status");
 }
 
 export type IndexRunStatus = {
@@ -239,6 +254,7 @@ export type CeleryTaskBreakdown = {
 export type CeleryStatus = {
   status: string;
   queue_length: number;
+  queue_lengths: Record<string, number>;
   active_total: number;
   reserved_total: number;
   scheduled_total: number;
@@ -246,6 +262,7 @@ export type CeleryStatus = {
   reserved: CeleryTaskBreakdown[];
   scheduled: CeleryTaskBreakdown[];
   queue_sample_size: number;
+  queue_sample_sources: CeleryTaskBreakdown[];
   queue_head: CeleryTaskBreakdown[];
   active_duplicate_overflows: CeleryTaskBreakdown[];
   queue_head_duplicate_overflows: CeleryTaskBreakdown[];

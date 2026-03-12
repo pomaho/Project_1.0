@@ -5,6 +5,7 @@ import httpx
 from app.config import settings
 
 MEILI_INDEX = "files"
+_INDEX_SETTINGS_CACHE_KEY: tuple[str, int] | None = None
 
 
 def _headers() -> dict[str, str]:
@@ -19,9 +20,17 @@ def get_client() -> httpx.Client:
 
 
 def ensure_index(client: httpx.Client) -> None:
+    global _INDEX_SETTINGS_CACHE_KEY
+
+    cache_key = (settings.meili_url, settings.meili_max_total_hits)
+    if _INDEX_SETTINGS_CACHE_KEY == cache_key:
+        return
+
     resp = client.get(f"/indexes/{MEILI_INDEX}")
     if resp.status_code == 404:
-        client.post("/indexes", json={"uid": MEILI_INDEX, "primaryKey": "id"})
+        create_resp = client.post("/indexes", json={"uid": MEILI_INDEX, "primaryKey": "id"})
+        if create_resp.status_code >= 400 and create_resp.status_code != 409:
+            create_resp.raise_for_status()
     elif resp.status_code >= 400:
         resp.raise_for_status()
     settings_payload = {
@@ -37,7 +46,9 @@ def ensure_index(client: httpx.Client) -> None:
         "sortableAttributes": ["shot_at", "mtime"],
         "pagination": {"maxTotalHits": settings.meili_max_total_hits},
     }
-    client.patch(f"/indexes/{MEILI_INDEX}/settings", json=settings_payload)
+    patch_resp = client.patch(f"/indexes/{MEILI_INDEX}/settings", json=settings_payload)
+    patch_resp.raise_for_status()
+    _INDEX_SETTINGS_CACHE_KEY = cache_key
 
 
 def upsert_documents(client: httpx.Client, docs: list[dict]) -> None:

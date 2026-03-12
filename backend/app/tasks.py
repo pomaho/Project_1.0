@@ -36,8 +36,14 @@ ASYNC_CHUNK_SIZE = 1000
 SHOT_AT_STATUS_KEY = "metadata:shot_at:status"
 SHOT_AT_LOCK_KEY = "metadata:shot_at:lock"
 SHOT_AT_COUNTERS_KEY = "metadata:shot_at:counters"
+FULL_REFRESH_STATUS_KEY = "refresh:full:status"
 METADATA_ENQUEUE_PREFIX = "metadata:extract:queued"
 METADATA_ENQUEUE_TTL_SECONDS = 60 * 60
+SEARCH_UPSERT_BUFFER_KEY = "search:upsert:buffer"
+SEARCH_UPSERT_FLUSH_LOCK_KEY = "search:upsert:flush:scheduled"
+SEARCH_UPSERT_FLUSH_QUEUE = "search_flush"
+SEARCH_UPSERT_BATCH_SIZE = 200
+SEARCH_UPSERT_FLUSH_DELAY_SECONDS = 1
 
 
 def _normalize_path(path: str) -> str:
@@ -60,9 +66,11 @@ def _metadata_enqueue_key(file_id: str) -> str:
     return f"{METADATA_ENQUEUE_PREFIX}:{file_id}"
 
 
-def enqueue_extract_metadata(file_id: str) -> bool:
+def enqueue_extract_metadata(file_id: str, force: bool = False) -> bool:
     client = get_redis()
     key = _metadata_enqueue_key(file_id)
+    if force:
+        client.delete(key)
     if not client.set(key, "1", nx=True, ex=METADATA_ENQUEUE_TTL_SECONDS):
         return False
     extract_metadata_task.delay(file_id)
@@ -72,6 +80,35 @@ def enqueue_extract_metadata(file_id: str) -> bool:
 def clear_extract_metadata_enqueue(file_id: str) -> None:
     client = get_redis()
     client.delete(_metadata_enqueue_key(file_id))
+
+
+def _schedule_search_upsert_flush(countdown: int) -> bool:
+    client = get_redis()
+    if not client.set(
+        SEARCH_UPSERT_FLUSH_LOCK_KEY,
+        "1",
+        nx=True,
+        ex=max(30, countdown + 30),
+    ):
+        return False
+    flush_upsert_search_docs_task.apply_async(
+        countdown=countdown,
+        queue=SEARCH_UPSERT_FLUSH_QUEUE,
+    )
+    return True
+
+
+def enqueue_upsert_search_doc(file_id: str) -> bool:
+    client = get_redis()
+    added = bool(client.sadd(SEARCH_UPSERT_BUFFER_KEY, file_id))
+    if not added:
+        return False
+    size = int(client.scard(SEARCH_UPSERT_BUFFER_KEY))
+    if size >= SEARCH_UPSERT_BATCH_SIZE:
+        _schedule_search_upsert_flush(0)
+    else:
+        _schedule_search_upsert_flush(SEARCH_UPSERT_FLUSH_DELAY_SECONDS)
+    return True
 
 
 def is_preview_exclusive() -> bool:
@@ -112,6 +149,22 @@ def get_shot_at_status() -> dict | None:
     client = get_redis()
     raw = client.get(SHOT_AT_STATUS_KEY)
     if not raw:
+        return None
+
+
+def set_full_refresh_status(payload: dict) -> None:
+    client = get_redis()
+    client.set(FULL_REFRESH_STATUS_KEY, json.dumps(payload))
+
+
+def get_full_refresh_status() -> dict | None:
+    client = get_redis()
+    raw = client.get(FULL_REFRESH_STATUS_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
         return None
     try:
         return json.loads(raw)
@@ -209,18 +262,39 @@ def _counter_payload(counter: Counter) -> list[dict]:
 
 def get_celery_status(queue_sample_size: int = 1000) -> dict:
     client = get_redis()
-    queue_length = int(client.llen("celery"))
+    queue_names = ("celery", SEARCH_UPSERT_FLUSH_QUEUE)
+    queue_lengths = {name: int(client.llen(name)) for name in queue_names}
+    queue_length = sum(queue_lengths.values())
+    sample_sources = []
+    for name in queue_names:
+        available = queue_lengths[name]
+        if not available:
+            continue
+        sample_sources.append((name, min(queue_sample_size - len(sample_sources), available)))
+        if sum(count for _, count in sample_sources) >= queue_sample_size:
+            break
     sample_size = min(queue_sample_size, queue_length)
     head_counts: Counter = Counter()
     head_duplicates: Counter = Counter()
+    queue_breakdown: Counter = Counter()
     if sample_size:
         pair_counts: Counter = Counter()
-        for raw in client.lrange("celery", 0, sample_size - 1):
-            task_name, arg0 = _decode_queue_message(raw)
-            if not task_name:
+        sampled = 0
+        for queue_name in queue_names:
+            remaining = queue_sample_size - sampled
+            if remaining <= 0:
+                break
+            take = min(remaining, queue_lengths[queue_name])
+            if take <= 0:
                 continue
-            head_counts[task_name] += 1
-            pair_counts[(task_name, arg0)] += 1
+            queue_breakdown[queue_name] = take
+            for raw in client.lrange(queue_name, 0, take - 1):
+                task_name, arg0 = _decode_queue_message(raw)
+                if not task_name:
+                    continue
+                head_counts[task_name] += 1
+                pair_counts[(task_name, arg0)] += 1
+            sampled += take
         for (task_name, _), count in pair_counts.items():
             if count > 1:
                 head_duplicates[task_name] += count - 1
@@ -256,6 +330,7 @@ def get_celery_status(queue_sample_size: int = 1000) -> dict:
     return {
         "status": status,
         "queue_length": queue_length,
+        "queue_lengths": queue_lengths,
         "active_total": active_total,
         "reserved_total": reserved_total,
         "scheduled_total": scheduled_total,
@@ -263,6 +338,7 @@ def get_celery_status(queue_sample_size: int = 1000) -> dict:
         "reserved": _counter_payload(reserved_counts),
         "scheduled": _counter_payload(scheduled_counts),
         "queue_sample_size": sample_size,
+        "queue_sample_sources": _counter_payload(queue_breakdown),
         "queue_head": _counter_payload(head_counts),
         "active_duplicate_overflows": _counter_payload(active_duplicates),
         "queue_head_duplicate_overflows": _counter_payload(head_duplicates),
@@ -345,7 +421,7 @@ def _orientation(width: int | None, height: int | None) -> models.Orientation:
 
 
 @celery_app.task(name="scan_storage")
-def scan_storage_task(run_id: str | None = None) -> dict:
+def scan_storage_task(run_id: str | None = None, full_refresh: bool = False) -> dict:
     if settings.storage_mode != "filesystem":
         return {"status": "skipped", "reason": "non-filesystem mode"}
 
@@ -466,7 +542,7 @@ def scan_storage_task(run_id: str | None = None) -> dict:
                             }
                         )
                         enqueue_extract_metadata(file_id)
-                        upsert_search_doc_task.delay(file_id)
+                        enqueue_upsert_search_doc(file_id)
                         restored += 1
                     elif current_mtime != mtime or stat.st_size != size:
                         session.query(models.File).filter(models.File.id == file_id).update(
@@ -525,6 +601,24 @@ def scan_storage_task(run_id: str | None = None) -> dict:
         if run_id:
             _clear_cancelled(run_id)
         queue_missing_metadata_task.delay()
+        if full_refresh:
+            set_preview_exclusive(False)
+            preview_counts = _compute_preview_counts(session)
+            set_preview_status(
+                {
+                    "status": "running",
+                    "round": 1,
+                    "max_rounds": settings.preview_check_rounds,
+                    "total_files": preview_counts["total_files"],
+                    "total_previews": preview_counts["total_previews"],
+                    "missing_previews": preview_counts["missing_previews"],
+                    "progress": preview_counts["progress"],
+                    "updated_at": datetime.utcnow().isoformat(),
+                    "started_at": datetime.utcnow().isoformat(),
+                }
+            )
+            queue_missing_previews_task.delay()
+            refresh_shot_at_task.delay(True)
         # Cleanup previews for deleted files after each rescan
         gc_previews_task.delay()
         return {
@@ -608,7 +702,7 @@ def extract_metadata_task(file_id: str) -> dict:
 
         file_row.keywords = new_keywords
         session.commit()
-        upsert_search_doc_task.delay(file_row.id)
+        enqueue_upsert_search_doc(file_row.id)
         return {"status": "ok", "added": added, "removed": removed}
     finally:
         clear_extract_metadata_enqueue(file_id)
@@ -663,6 +757,39 @@ def upsert_search_doc_task(file_id: str) -> dict:
     try:
         upsert_file(session, file_id)
         return {"status": "ok"}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="flush_upsert_search_docs")
+def flush_upsert_search_docs_task() -> dict:
+    client = get_redis()
+    client.delete(SEARCH_UPSERT_FLUSH_LOCK_KEY)
+
+    raw_ids = client.spop(SEARCH_UPSERT_BUFFER_KEY, SEARCH_UPSERT_BATCH_SIZE)
+    if not raw_ids:
+        return {"status": "empty", "count": 0}
+    if isinstance(raw_ids, str):
+        file_ids = [raw_ids]
+    else:
+        file_ids = list(raw_ids)
+
+    session: Session = SessionLocal()
+    try:
+        rows = (
+            session.query(models.File)
+            .filter(models.File.id.in_(file_ids))
+            .all()
+        )
+        docs = [build_doc(row) for row in rows]
+        with get_client() as meili:
+            ensure_index(meili)
+            if docs:
+                upsert_documents(meili, docs)
+        remaining = int(client.scard(SEARCH_UPSERT_BUFFER_KEY))
+        if remaining:
+            _schedule_search_upsert_flush(0)
+        return {"status": "ok", "count": len(docs), "remaining": remaining}
     finally:
         session.close()
 
@@ -957,6 +1084,8 @@ def refresh_shot_at_file(file_id: str) -> dict:
             file_row.updated_at = datetime.utcnow()
             updated = 1
         session.commit()
+        if updated:
+            enqueue_upsert_search_doc(file_row.id)
         _shot_at_bump(scanned=1, updated=updated)
         return {"status": "ok", "updated": updated}
     except Exception:

@@ -13,6 +13,7 @@ from app.schemas import (
     AuditLogOut,
     CeleryStatus,
     DownloadLogOut,
+    FullRefreshStatus,
     MissingKeywordItem,
     MissingKeywordResponse,
     MissingMetadataSummary,
@@ -27,6 +28,7 @@ from app.tasks import (
     get_reindex_status,
     get_shot_at_status,
     get_celery_status,
+    get_full_refresh_status,
     reindex_after_metadata_task,
     request_index_cancel,
     cleanup_orphan_previews_task,
@@ -38,6 +40,7 @@ from app.tasks import (
     scan_storage_task,
     set_orphan_status,
     set_preview_exclusive,
+    set_full_refresh_status,
     set_preview_status,
     set_shot_at_status,
     reset_shot_at_state,
@@ -111,7 +114,34 @@ def refresh_all(
     run = models.IndexRun(status=models.IndexRunStatus.running)
     db.add(run)
     db.commit()
-    scan_storage_task.delay(run.id)
+    missing_counts = _missing_metadata_counts(db)
+    preview_counts = _preview_counts(db)
+    started_at = datetime.utcnow().isoformat()
+    set_full_refresh_status(
+        {
+            "status": "running",
+            "stage": "scanning",
+            "progress": None,
+            "stage_detail": "Сканирование файлов",
+            "started_at": started_at,
+            "updated_at": started_at,
+            "metadata_baseline": missing_counts["missing_keywords"] + missing_counts["missing_text"],
+            "shot_at_baseline": missing_counts["missing_shot_at"],
+            "preview_baseline": preview_counts["missing_previews"],
+            "run_id": run.id,
+        }
+    )
+    set_shot_at_status(
+        {
+            "status": "queued",
+            "total": 0,
+            "scanned": 0,
+            "updated": 0,
+            "updated_at": datetime.utcnow().isoformat(),
+            "started_at": datetime.utcnow().isoformat(),
+        }
+    )
+    scan_storage_task.delay(run.id, True)
     set_reindex_status(
         {
             "status": "waiting_metadata",
@@ -153,6 +183,14 @@ def reindex_only(
 @router.get("/index/reindex/status")
 def reindex_status(_: models.User = Depends(require_admin)) -> dict:
     status = get_reindex_status()
+    celery = get_celery_status()
+    if status and celery["status"] == "idle" and status.get("status") in {"waiting_metadata", "queued", "running"}:
+        status = {
+            "status": "idle",
+            "count": 0,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        set_reindex_status(status)
     if status:
         return status
     return {
@@ -283,6 +321,112 @@ def missing_metadata_summary(_: models.User = Depends(require_admin), db: Sessio
 def celery_status(_: models.User = Depends(require_admin)) -> CeleryStatus:
     return CeleryStatus(**get_celery_status())
 
+
+@router.get("/index/full-refresh/status", response_model=FullRefreshStatus)
+def full_refresh_status(
+    _: models.User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> FullRefreshStatus:
+    state = get_full_refresh_status()
+    now = datetime.utcnow().isoformat()
+    celery = get_celery_status()
+    preview_state = get_preview_status() or {}
+    if not state:
+        if (
+            celery["status"] == "idle"
+            and preview_state.get("status") == "running"
+            and not preview_state.get("started_at")
+        ):
+            set_preview_status(
+                {
+                    "status": "idle",
+                    "round": 0,
+                    "max_rounds": settings.preview_check_rounds,
+                    "updated_at": now,
+                }
+            )
+        if celery["status"] == "idle" and (get_reindex_status() or {}).get("status") == "waiting_metadata":
+            set_reindex_status(
+                {
+                    "status": "idle",
+                    "count": 0,
+                    "updated_at": now,
+                }
+            )
+        return FullRefreshStatus(
+            status="idle",
+            stage="idle",
+            progress=0,
+            stage_detail="Нет активного обновления",
+            updated_at=datetime.utcnow(),
+        )
+
+    missing_counts = _missing_metadata_counts(db)
+    preview_counts = _preview_counts(db)
+    shot = get_shot_at_status() or {}
+    reindex = get_reindex_status() or {}
+    run_id = state.get("run_id")
+    run = None
+    if run_id:
+        run = db.query(models.IndexRun).filter(models.IndexRun.id == run_id).first()
+
+    stage = "completed"
+    status = state.get("status", "running")
+    progress = None
+    detail = "Обновление завершено"
+
+    metadata_baseline = max(1, int(state.get("metadata_baseline") or 0))
+    metadata_current = missing_counts["missing_keywords"] + missing_counts["missing_text"]
+    shot_total = int(shot.get("total") or 0)
+    shot_scanned = int(shot.get("scanned") or 0)
+    preview_progress = int(round(float(preview_counts["progress"]) * 100))
+
+    if run and run.status == models.IndexRunStatus.running:
+        stage = "scanning"
+        status = "running"
+        detail = "Сканирование файлов"
+    elif metadata_current > 0 and reindex.get("status") == "waiting_metadata":
+        stage = "metadata"
+        status = "running"
+        progress = max(0, min(100, int(round(((metadata_baseline - metadata_current) / metadata_baseline) * 100))))
+        detail = f"Метаданные: осталось {metadata_current}"
+    elif shot.get("status") in {"queued", "running"} and (shot_total == 0 or shot_scanned < shot_total):
+        stage = "shot_at"
+        status = "running"
+        progress = max(0, min(100, int(round((shot_scanned / max(1, shot_total)) * 100)))) if shot_total else None
+        detail = f"Даты съемки: {shot_scanned} / {shot_total or '?'}"
+    elif preview_counts["missing_previews"] > 0 and preview_state.get("status") == "running":
+        stage = "previews"
+        status = "running"
+        progress = preview_progress
+        detail = f"Превью: осталось {preview_counts['missing_previews']}"
+    elif reindex.get("status") in {"queued", "running"}:
+        stage = "reindex"
+        status = "running"
+        total = int(reindex.get("total") or 0)
+        completed = int(reindex.get("completed") or reindex.get("count") or 0)
+        progress = max(0, min(100, int(round((completed / max(1, total)) * 100)))) if total else None
+        detail = f"Переиндексация: {completed} / {total or '?'}"
+    elif reindex.get("status") == "waiting_metadata":
+        stage = "metadata"
+        status = "running"
+        progress = max(0, min(100, int(round(((metadata_baseline - metadata_current) / metadata_baseline) * 100))))
+        detail = f"Метаданные: осталось {metadata_current}"
+    else:
+        status = "completed"
+        progress = 100
+
+    payload = {
+        **state,
+        "status": status,
+        "stage": stage,
+        "progress": progress,
+        "stage_detail": detail,
+        "updated_at": now,
+    }
+    set_full_refresh_status(payload)
+    return FullRefreshStatus(**payload)
+
 @router.get("/metadata/shot-at/status")
 def shot_at_status(_: models.User = Depends(require_admin)) -> dict:
     status = get_shot_at_status()
@@ -300,6 +444,14 @@ def shot_at_status(_: models.User = Depends(require_admin)) -> dict:
 @router.get("/previews/status")
 def previews_status(_: models.User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     status = get_preview_status()
+    celery = get_celery_status()
+    if status and celery["status"] == "idle" and status.get("status") == "running":
+        status = {
+            **status,
+            "status": "idle",
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        set_preview_status(status)
     counts = _preview_counts(db)
     return {
         "status": (status or {}).get("status", "idle"),
@@ -360,7 +512,7 @@ def rescan_missing_keywords(
     )
     queued = 0
     for (file_id,) in rows:
-        if enqueue_extract_metadata(file_id):
+        if enqueue_extract_metadata(file_id, force=True):
             queued += 1
     log_action(
         db,

@@ -12,7 +12,7 @@ from app.previews import preview_path
 from app.schemas import DownloadTokenResponse, FileDetail, KeywordUpdateRequest
 from app.rate_limit import check_download_limit
 from app.security import create_download_token, decode_token
-from app.tasks import generate_previews_task, upsert_search_doc_task
+from app.tasks import enqueue_upsert_search_doc, generate_previews_task
 
 router = APIRouter()
 
@@ -90,7 +90,7 @@ def update_keywords(
         meta={"file_id": file_row.id, "added": len(to_add), "removed": len(to_remove)},
     )
     db.commit()
-    upsert_search_doc_task.delay(file_row.id)
+    enqueue_upsert_search_doc(file_row.id)
 
     return FileDetail(
         id=file_row.id,
