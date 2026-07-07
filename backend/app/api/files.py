@@ -12,7 +12,7 @@ from app.previews import preview_path
 from app.schemas import DownloadTokenResponse, FileDetail, KeywordUpdateRequest
 from app.rate_limit import check_download_limit, check_rate_limit, client_ip
 from app.security import create_download_token, decode_token
-from app.tasks import enqueue_upsert_search_doc, generate_previews_task
+from app.tasks import enqueue_generate_preview, enqueue_upsert_search_doc
 
 router = APIRouter()
 
@@ -176,7 +176,7 @@ def get_preview(
 
     path = preview_path(settings.previews_root, file_id, size)  # type: ignore[arg-type]
     if not path.exists():
-        generate_previews_task.delay(file_id)
+        enqueue_generate_preview(file_id)
         raise HTTPException(status_code=404, detail="Preview not ready")
 
     return FileResponse(

@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     preview_check_rounds: int = 3
     preview_check_interval_seconds: int = 60
     preview_exclusive_retry_seconds: int = 120
+    preview_generation_max_active: int = 2
+    preview_generation_retry_seconds: int = 10
+    preview_enqueue_ttl_seconds: int = 21600
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

@@ -26,6 +26,8 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
 PREVIEW_STATUS_KEY = "preview:refresh:status"
 PREVIEW_EXCLUSIVE_KEY = "preview:exclusive"
+PREVIEW_ENQUEUE_PREFIX = "preview:generate:queued"
+PREVIEW_ACTIVE_KEY = "preview:generate:active"
 ORPHAN_STATUS_KEY = "preview:orphans:status"
 REINDEX_STATUS_KEY = "search:reindex:status"
 REINDEX_WAIT_KEY = "search:reindex:wait"
@@ -66,6 +68,10 @@ def _metadata_enqueue_key(file_id: str) -> str:
     return f"{METADATA_ENQUEUE_PREFIX}:{file_id}"
 
 
+def _preview_enqueue_key(file_id: str) -> str:
+    return f"{PREVIEW_ENQUEUE_PREFIX}:{file_id}"
+
+
 def enqueue_extract_metadata(file_id: str, force: bool = False) -> bool:
     client = get_redis()
     key = _metadata_enqueue_key(file_id)
@@ -80,6 +86,22 @@ def enqueue_extract_metadata(file_id: str, force: bool = False) -> bool:
 def clear_extract_metadata_enqueue(file_id: str) -> None:
     client = get_redis()
     client.delete(_metadata_enqueue_key(file_id))
+
+
+def enqueue_generate_preview(file_id: str, force: bool = False) -> bool:
+    client = get_redis()
+    key = _preview_enqueue_key(file_id)
+    if force:
+        client.delete(key)
+    if not client.set(key, "1", nx=True, ex=settings.preview_enqueue_ttl_seconds):
+        return False
+    generate_previews_task.delay(file_id)
+    return True
+
+
+def clear_generate_preview_enqueue(file_id: str) -> None:
+    client = get_redis()
+    client.delete(_preview_enqueue_key(file_id))
 
 
 def _schedule_search_upsert_flush(countdown: int) -> bool:
@@ -711,37 +733,59 @@ def extract_metadata_task(file_id: str) -> dict:
 
 @celery_app.task(name="generate_previews")
 def generate_previews_task(file_id: str) -> dict:
-    if settings.storage_mode != "filesystem":
-        return {"status": "skipped", "reason": "non-filesystem mode"}
-
-    session: Session = SessionLocal()
+    active_added = False
+    clear_enqueue = True
+    client = get_redis()
     try:
-        file_row = session.query(models.File).filter(models.File.id == file_id).first()
-        if not file_row or file_row.deleted_at:
-            return {"status": "missing"}
+        if settings.preview_generation_max_active > 0:
+            active_count = int(client.scard(PREVIEW_ACTIVE_KEY))
+            if active_count >= settings.preview_generation_max_active:
+                clear_enqueue = False
+                generate_previews_task.apply_async(
+                    args=[file_id],
+                    countdown=settings.preview_generation_retry_seconds,
+                )
+                return {"status": "deferred", "reason": "preview_generation_throttled"}
+            client.sadd(PREVIEW_ACTIVE_KEY, file_id)
+            client.expire(PREVIEW_ACTIVE_KEY, max(60, settings.preview_generation_retry_seconds * 6))
+            active_added = True
 
-        previews_root = settings.previews_root
-        preview_data = generate_preview(file_row.original_key, "medium")
-        preview_key = write_preview(previews_root, file_row.id, "medium", preview_data)
+        if settings.storage_mode != "filesystem":
+            return {"status": "skipped", "reason": "non-filesystem mode"}
 
-        preview_row = session.query(models.Preview).filter(models.Preview.file_id == file_row.id).first()
-        if preview_row:
-            preview_row.thumb_key = preview_key
-            preview_row.medium_key = preview_key
-            preview_row.updated_at = datetime.utcnow()
-        else:
-            preview_row = models.Preview(
-                file_id=file_row.id,
-                thumb_key=preview_key,
-                medium_key=preview_key,
-                updated_at=datetime.utcnow(),
-            )
-            session.add(preview_row)
+        session: Session = SessionLocal()
+        try:
+            file_row = session.query(models.File).filter(models.File.id == file_id).first()
+            if not file_row or file_row.deleted_at:
+                return {"status": "missing"}
 
-        session.commit()
-        return {"status": "ok"}
+            previews_root = settings.previews_root
+            preview_data = generate_preview(file_row.original_key, "medium")
+            preview_key = write_preview(previews_root, file_row.id, "medium", preview_data)
+
+            preview_row = session.query(models.Preview).filter(models.Preview.file_id == file_row.id).first()
+            if preview_row:
+                preview_row.thumb_key = preview_key
+                preview_row.medium_key = preview_key
+                preview_row.updated_at = datetime.utcnow()
+            else:
+                preview_row = models.Preview(
+                    file_id=file_row.id,
+                    thumb_key=preview_key,
+                    medium_key=preview_key,
+                    updated_at=datetime.utcnow(),
+                )
+                session.add(preview_row)
+
+            session.commit()
+            return {"status": "ok"}
+        finally:
+            session.close()
     finally:
-        session.close()
+        if active_added:
+            client.srem(PREVIEW_ACTIVE_KEY, file_id)
+        if clear_enqueue:
+            clear_generate_preview_enqueue(file_id)
 
 
 @celery_app.task(name="upsert_search_doc")
@@ -920,8 +964,8 @@ def queue_missing_previews_task() -> dict:
             .all()
         )
         for (file_id,) in rows:
-            generate_previews_task.delay(file_id)
-            queued += 1
+            if enqueue_generate_preview(file_id):
+                queued += 1
         return {"status": "ok", "queued": queued}
     finally:
         session.close()
