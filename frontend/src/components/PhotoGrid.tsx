@@ -4,10 +4,109 @@ import { Box, IconButton } from "@mui/material";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import type { SearchItem } from "../api/search";
 import { withAccessToken } from "../api/client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const TILE_WIDTH = 220;
 const TILE_HEIGHT = 180;
+const MAX_PARALLEL_IMAGE_LOADS = 6;
+
+let activeImageLoads = 0;
+const queuedImageLoads: Array<() => void> = [];
+
+function releaseImageLoad() {
+  activeImageLoads = Math.max(0, activeImageLoads - 1);
+  const next = queuedImageLoads.shift();
+  if (next) {
+    activeImageLoads += 1;
+    next();
+  }
+}
+
+function scheduleImageLoad(start: (release: () => void) => void) {
+  let cancelled = false;
+  const run = () => {
+    if (cancelled) {
+      releaseImageLoad();
+      return;
+    }
+    start(releaseImageLoad);
+  };
+
+  if (activeImageLoads < MAX_PARALLEL_IMAGE_LOADS) {
+    activeImageLoads += 1;
+    run();
+  } else {
+    queuedImageLoads.push(run);
+  }
+
+  return () => {
+    cancelled = true;
+    const index = queuedImageLoads.indexOf(run);
+    if (index >= 0) {
+      queuedImageLoads.splice(index, 1);
+    }
+  };
+}
+
+function PreviewImage({
+  item,
+  refreshToken,
+  onRetry,
+}: {
+  item: SearchItem;
+  refreshToken?: number;
+  onRetry: () => void;
+}) {
+  const imageUrl = `${withAccessToken(item.thumb_url)}${refreshToken ? `&r=${refreshToken}` : ""}`;
+  const [src, setSrc] = useState<string | null>(null);
+  const releaseRef = useRef<(() => void) | null>(null);
+  const releasedRef = useRef(true);
+
+  const releaseOnce = () => {
+    if (releasedRef.current) return;
+    releasedRef.current = true;
+    releaseRef.current?.();
+    releaseRef.current = null;
+  };
+
+  useEffect(() => {
+    setSrc(null);
+    releaseRef.current = null;
+    releasedRef.current = false;
+    const cancel = scheduleImageLoad((release) => {
+      releaseRef.current = release;
+      setSrc(imageUrl);
+    });
+    return () => {
+      cancel();
+      releaseOnce();
+    };
+  }, [imageUrl]);
+
+  if (!src) {
+    return <Box sx={{ width: "100%", height: "100%", backgroundColor: "#101114" }} />;
+  }
+
+  return (
+    <img
+      src={src}
+      alt={item.keywords.join(", ")}
+      loading="lazy"
+      style={{
+        width: "100%",
+        height: "100%",
+        objectFit: "contain",
+        backgroundColor: "#101114",
+        cursor: "pointer",
+      }}
+      onLoad={releaseOnce}
+      onError={() => {
+        releaseOnce();
+        window.setTimeout(onRetry, 2000);
+      }}
+    />
+  );
+}
 
 export default function PhotoGrid({
   items,
@@ -69,27 +168,15 @@ export default function PhotoGrid({
                     }}
                     onClick={() => onSelect(item)}
                   >
-                    <img
-                      src={`${withAccessToken(item.thumb_url)}${
-                        refreshTokens[item.id] ? `&r=${refreshTokens[item.id]}` : ""
-                      }`}
-                      alt={item.keywords.join(", ")}
-                      loading="lazy"
-                      style={{
-                        width: "100%",
-                        height: "100%",
-                        objectFit: "contain",
-                        backgroundColor: "#101114",
-                        cursor: "pointer",
-                      }}
-                      onError={() => {
-                        window.setTimeout(() => {
-                          setRefreshTokens((prev) => ({
-                            ...prev,
-                            [item.id]: Date.now(),
-                          }));
-                        }, 2000);
-                      }}
+                    <PreviewImage
+                      item={item}
+                      refreshToken={refreshTokens[item.id]}
+                      onRetry={() =>
+                        setRefreshTokens((prev) => ({
+                          ...prev,
+                          [item.id]: Date.now(),
+                        }))
+                      }
                     />
                     {canDownload && (
                       <IconButton

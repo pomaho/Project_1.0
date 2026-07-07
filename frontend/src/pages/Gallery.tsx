@@ -35,7 +35,7 @@ export default function GalleryPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const debounced = useDebounce(submittedQuery, 300);
   const debouncedInput = useDebounce(query, 300);
-  const pageSize = 200;
+  const pageSize = 100;
   const { logout, user } = useAuth();
   const canDownload = user?.role === "admin" || user?.role === "manager";
 
