@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     jwt_refresh_ttl: str = "30d"
     download_token_ttl: str = "90s"
 
+    rate_limit_search_per_min: int = 30
+    rate_limit_previews_per_min: int = 180
     rate_limit_downloads_per_min: int = 20
     rescan_interval_minutes: int = 60
     reindex_delay_seconds: int = 120

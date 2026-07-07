@@ -6,18 +6,10 @@ from app import models
 from app.config import settings
 from app.db import get_db
 from app.audit import log_action
+from app.rate_limit import check_rate_limit, client_ip
 from app.security import decode_token
 
 router = APIRouter()
-
-
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
 
 
 @router.get("/{token}")
@@ -40,6 +32,12 @@ def download_file(token: str, request: Request, db: Session = Depends(get_db)) -
         )
         if not user or user.role not in {models.Role.admin, models.Role.manager}:
             raise HTTPException(status_code=403, detail="Manager only")
+        if not check_rate_limit(
+            "download_ip",
+            client_ip(request),
+            settings.rate_limit_downloads_per_min,
+        ):
+            raise HTTPException(status_code=429, detail="Download rate limit exceeded")
         log_action(
             db,
             user_id=user_id,
@@ -49,8 +47,13 @@ def download_file(token: str, request: Request, db: Session = Depends(get_db)) -
                 "file_id": file_id,
                 "filename": file_row.filename,
                 "original_key": file_row.original_key,
-                "ip": _client_ip(request),
+                "ip": client_ip(request),
             },
         )
         db.commit()
-    return FileResponse(file_row.original_key, media_type=file_row.mime, filename=file_row.filename)
+    return FileResponse(
+        file_row.original_key,
+        media_type=file_row.mime,
+        filename=file_row.filename,
+        headers={"Cache-Control": "private, max-age=0, no-store"},
+    )

@@ -10,7 +10,7 @@ from app.deps import get_current_user, require_manager
 from app.keywords import normalize_keyword
 from app.previews import preview_path
 from app.schemas import DownloadTokenResponse, FileDetail, KeywordUpdateRequest
-from app.rate_limit import check_download_limit
+from app.rate_limit import check_download_limit, check_rate_limit, client_ip
 from app.security import create_download_token, decode_token
 from app.tasks import enqueue_upsert_search_doc, generate_previews_task
 
@@ -113,6 +113,7 @@ def update_keywords(
 @router.post("/{file_id}/download-token", response_model=DownloadTokenResponse)
 def download_token(
     file_id: str,
+    request: Request,
     user: models.User = Depends(require_manager),
     db: Session = Depends(get_db),
 ) -> DownloadTokenResponse:
@@ -120,6 +121,12 @@ def download_token(
     if not file_row or file_row.deleted_at:
         raise HTTPException(status_code=404, detail="File not found")
     if not check_download_limit(user.id, settings.rate_limit_downloads_per_min):
+        raise HTTPException(status_code=429, detail="Download rate limit exceeded")
+    if not check_rate_limit(
+        "download_ip",
+        client_ip(request),
+        settings.rate_limit_downloads_per_min,
+    ):
         raise HTTPException(status_code=429, detail="Download rate limit exceeded")
     token = create_download_token(file_id, user.id, settings.download_token_ttl_seconds)
     log_action(
@@ -158,6 +165,8 @@ def get_preview(
     )
     if not user:
         raise HTTPException(status_code=401, detail="Invalid user")
+    if not check_rate_limit("preview", client_ip(request), settings.rate_limit_previews_per_min):
+        raise HTTPException(status_code=429, detail="Preview rate limit exceeded")
 
     file_row = db.query(models.File).filter(models.File.id == file_id).first()
     if not file_row or file_row.deleted_at:
@@ -170,4 +179,8 @@ def get_preview(
         generate_previews_task.delay(file_id)
         raise HTTPException(status_code=404, detail="Preview not ready")
 
-    return FileResponse(path, media_type="image/webp")
+    return FileResponse(
+        path,
+        media_type="image/webp",
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )

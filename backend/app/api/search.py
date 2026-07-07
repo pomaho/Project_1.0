@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app import models
 from app.db import get_db
 from app.deps import get_current_user
 from app.audit import log_action
+from app.config import settings
+from app.rate_limit import check_rate_limit, client_ip
 from app.schemas import SearchResponse, SearchResultItem
 from app.search_client import get_client, search_documents
 
@@ -14,12 +16,16 @@ router = APIRouter()
 
 @router.get("", response_model=SearchResponse)
 def search(
+    request: Request,
     q: str = Query(default=""),
     limit: int = Query(default=10000, ge=1, le=10000),
     offset: int = Query(default=0, ge=0),
     _: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SearchResponse:
+    if not check_rate_limit("search", client_ip(request), settings.rate_limit_search_per_min):
+        raise HTTPException(status_code=429, detail="Search rate limit exceeded")
+
     total_all = db.query(models.File).filter(models.File.deleted_at.is_(None)).count()
     if not q.strip():
         rows = (
