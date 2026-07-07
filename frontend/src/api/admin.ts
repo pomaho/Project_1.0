@@ -272,3 +272,13 @@ export type CeleryStatus = {
 export async function fetchCeleryStatus(): Promise<CeleryStatus> {
   return apiFetch<CeleryStatus>("/admin/celery/status");
 }
+
+export type ExternalTrafficStatus = {
+  minutes: number;
+  totals: Record<string, number>;
+  per_minute: Array<Record<string, number>>;
+};
+
+export async function fetchTrafficStatus(): Promise<ExternalTrafficStatus> {
+  return apiFetch<ExternalTrafficStatus>("/admin/traffic/status");
+}

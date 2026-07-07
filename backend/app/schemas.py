@@ -157,3 +157,9 @@ class FullRefreshStatus(BaseModel):
     stage_detail: Optional[str] = None
     started_at: Optional[datetime] = None
     updated_at: datetime
+
+
+class ExternalTrafficStatus(BaseModel):
+    minutes: int
+    totals: dict[str, int]
+    per_minute: List[dict]

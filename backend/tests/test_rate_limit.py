@@ -1,4 +1,4 @@
-from app.rate_limit import check_download_limit, check_rate_limit
+from app.rate_limit import check_download_limit, check_rate_limit, get_recent_request_metrics
 
 
 class FakeRedis:
@@ -14,6 +14,9 @@ class FakeRedis:
     def expire(self, key: str, ttl: int) -> None:
         self.expirations[key] = ttl
 
+    def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
 
 def test_rate_limit_allows_under_limit(monkeypatch):
     fake = FakeRedis()
@@ -27,7 +30,10 @@ def test_rate_limit_allows_under_limit(monkeypatch):
     assert check_download_limit("user-1", 2) is True
     assert check_download_limit("user-1", 2) is False
 
-    assert list(fake.expirations.values()) == [60]
+    assert any(
+        key.startswith("rate:download:user-1:") and ttl == 60
+        for key, ttl in fake.expirations.items()
+    )
 
 
 def test_scoped_rate_limits_are_independent(monkeypatch):
@@ -53,3 +59,22 @@ def test_zero_rate_limit_disables_limit(monkeypatch):
 
     assert check_rate_limit("search", "1.2.3.4", 0) is True
     assert fake.store == {}
+
+
+def test_request_metrics_are_recorded(monkeypatch):
+    fake = FakeRedis()
+
+    def fake_get():
+        return fake
+
+    monkeypatch.setattr("app.rate_limit.get_redis", fake_get)
+    monkeypatch.setattr("app.rate_limit.time.time", lambda: 120)
+
+    assert check_rate_limit("preview", "1.2.3.4", 10) is True
+    assert check_rate_limit("search", "1.2.3.4", 10) is True
+
+    metrics = get_recent_request_metrics(2)
+
+    assert metrics["totals"]["preview"] == 1
+    assert metrics["totals"]["search"] == 1
+    assert metrics["totals"]["total"] == 2

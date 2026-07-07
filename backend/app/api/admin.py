@@ -13,6 +13,7 @@ from app.schemas import (
     AuditLogOut,
     CeleryStatus,
     DownloadLogOut,
+    ExternalTrafficStatus,
     FullRefreshStatus,
     MissingKeywordItem,
     MissingKeywordResponse,
@@ -22,6 +23,7 @@ from app.schemas import (
     UserUpdate,
 )
 from app.security import hash_password
+from app.rate_limit import get_recent_request_metrics
 from app.tasks import (
     get_orphan_status,
     get_preview_status,
@@ -320,6 +322,11 @@ def missing_metadata_summary(_: models.User = Depends(require_admin), db: Sessio
 @router.get("/celery/status", response_model=CeleryStatus)
 def celery_status(_: models.User = Depends(require_admin)) -> CeleryStatus:
     return CeleryStatus(**get_celery_status())
+
+
+@router.get("/traffic/status", response_model=ExternalTrafficStatus)
+def traffic_status(_: models.User = Depends(require_admin)) -> ExternalTrafficStatus:
+    return ExternalTrafficStatus(**get_recent_request_metrics(5))
 
 
 @router.get("/index/full-refresh/status", response_model=FullRefreshStatus)

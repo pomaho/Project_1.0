@@ -26,6 +26,7 @@ import {
   AdminUser,
   AuditLog,
   DownloadLog,
+  ExternalTrafficStatus,
   FullRefreshStatus,
   IndexRunStatus,
   OrphanPreviewStatus,
@@ -55,6 +56,7 @@ import {
   fetchMissingKeywords,
   fetchMissingMetadataSummary,
   fetchCeleryStatus,
+  fetchTrafficStatus,
   rescanMissingKeywords,
 } from "../api/admin";
 import { useAuth } from "../auth";
@@ -86,6 +88,7 @@ export default function AdminPage() {
   const [missingKeywords, setMissingKeywords] = useState<MissingKeywordItem[]>([]);
   const [missingMetaSummary, setMissingMetaSummary] = useState<MissingMetadataSummary | null>(null);
   const [celery, setCelery] = useState<CeleryStatus | null>(null);
+  const [traffic, setTraffic] = useState<ExternalTrafficStatus | null>(null);
   const [missingKeywordsTotal, setMissingKeywordsTotal] = useState(0);
   const [missingKeywordsPage, setMissingKeywordsPage] = useState(0);
   const missingKeywordsLimit = 50;
@@ -114,6 +117,7 @@ export default function AdminPage() {
     shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
     fetchMissingMetadataSummary().then(setMissingMetaSummary).catch(() => setMissingMetaSummary(null));
     fetchCeleryStatus().then(setCelery).catch(() => setCelery(null));
+    fetchTrafficStatus().then(setTraffic).catch(() => setTraffic(null));
     if (tab === 3) {
       fetchMissingKeywords(missingKeywordsLimit, missingKeywordsPage * missingKeywordsLimit)
         .then((data) => {
@@ -135,6 +139,7 @@ export default function AdminPage() {
       shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
       fetchMissingMetadataSummary().then(setMissingMetaSummary).catch(() => setMissingMetaSummary(null));
       fetchCeleryStatus().then(setCelery).catch(() => setCelery(null));
+      fetchTrafficStatus().then(setTraffic).catch(() => setTraffic(null));
       if (tab === 2) {
         fetchDownloads(downloadsLimit, downloadsPage * downloadsLimit)
           .then(setDownloads)
@@ -320,6 +325,16 @@ export default function AdminPage() {
           </Typography>
           <Typography variant="caption" sx={{ display: "block", mt: 0.5 }}>
             Источник выборки: {formatTaskBreakdown(celery?.queue_sample_sources)}
+          </Typography>
+        </Box>
+        <Box sx={{ mt: 2 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            Внешние запросы за 5 минут: всего {traffic?.totals?.total ?? 0}
+          </Typography>
+          <Typography variant="caption" sx={{ display: "block", mt: 0.5 }}>
+            Поиск: {traffic?.totals?.search ?? 0} | Превью: {traffic?.totals?.preview ?? 0} |
+            Токены скачивания: {traffic?.totals?.download ?? 0} | Скачивания по IP:{" "}
+            {traffic?.totals?.download_ip ?? 0}
           </Typography>
         </Box>
         <Box sx={{ mt: 2 }}>
