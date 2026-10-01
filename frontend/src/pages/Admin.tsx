@@ -137,7 +137,6 @@ export default function AdminPage() {
       orphanPreviewStatus().then(setOrphans).catch(() => setOrphans(null));
       reindexStatus().then(setReindex).catch(() => setReindex(null));
       shotAtStatus().then(setShotAt).catch(() => setShotAt(null));
-      fetchMissingMetadataSummary().then(setMissingMetaSummary).catch(() => setMissingMetaSummary(null));
       fetchCeleryStatus().then(setCelery).catch(() => setCelery(null));
       fetchTrafficStatus().then(setTraffic).catch(() => setTraffic(null));
       if (tab === 2) {
@@ -157,7 +156,14 @@ export default function AdminPage() {
           });
       }
     }, 15000);
-    return () => window.clearInterval(interval);
+    const metadataInterval = window.setInterval(() => {
+      if (document.hidden) return;
+      fetchMissingMetadataSummary().then(setMissingMetaSummary).catch(() => setMissingMetaSummary(null));
+    }, 60000);
+    return () => {
+      window.clearInterval(interval);
+      window.clearInterval(metadataInterval);
+    };
   }, [tab, downloadsPage, missingKeywordsPage]);
 
   const run = status?.run ?? null;

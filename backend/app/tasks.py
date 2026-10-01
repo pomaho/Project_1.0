@@ -4,11 +4,15 @@ import base64
 import json
 import mimetypes
 import os
+import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 
-from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app import models
@@ -17,6 +21,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.keywords import normalize_keyword
 from app.metadata import extract_metadata, extract_shot_at_only
+from app.metadata_state import count_pending_metadata, metadata_pending_clause
 from app.previews import generate_preview, write_preview
 from app.search_client import ensure_index, get_client, search_documents, upsert_documents
 from app.search_index import build_doc, remove_file, upsert_file
@@ -46,6 +51,13 @@ SEARCH_UPSERT_FLUSH_LOCK_KEY = "search:upsert:flush:scheduled"
 SEARCH_UPSERT_FLUSH_QUEUE = "search_flush"
 SEARCH_UPSERT_BATCH_SIZE = 200
 SEARCH_UPSERT_FLUSH_DELAY_SECONDS = 1
+CELERY_STATUS_CACHE_SECONDS = 3
+SCAN_STAT_BATCH_SIZE = 1024
+SCAN_PROGRESS_INTERVAL = 2000
+
+_celery_status_cache: dict | None = None
+_celery_status_cache_until = 0.0
+_celery_status_cache_lock = Lock()
 
 
 def _normalize_path(path: str) -> str:
@@ -252,6 +264,10 @@ def get_reindex_status() -> dict | None:
         return None
 
 
+def begin_reindex_wait(run_id: str) -> None:
+    get_redis().set(REINDEX_WAIT_KEY, run_id)
+
+
 def _task_arg0(task: dict) -> str | None:
     args = task.get("args")
     if isinstance(args, (list, tuple)):
@@ -282,7 +298,14 @@ def _counter_payload(counter: Counter) -> list[dict]:
     return [{"task": task, "count": count} for task, count in counter.most_common()]
 
 
-def get_celery_status(queue_sample_size: int = 1000) -> dict:
+def _get_celery_inspector():
+    kwargs = {"timeout": 1}
+    if settings.celery_expected_workers > 0:
+        kwargs["limit"] = settings.celery_expected_workers
+    return celery_app.control.inspect(**kwargs)
+
+
+def _collect_celery_status(queue_sample_size: int = 1000) -> dict:
     client = get_redis()
     queue_names = ("celery", SEARCH_UPSERT_FLUSH_QUEUE)
     queue_lengths = {name: int(client.llen(name)) for name in queue_names}
@@ -321,7 +344,7 @@ def get_celery_status(queue_sample_size: int = 1000) -> dict:
             if count > 1:
                 head_duplicates[task_name] += count - 1
 
-    inspect = celery_app.control.inspect(timeout=1)
+    inspect = _get_celery_inspector()
     active_raw = inspect.active() or {}
     reserved_raw = inspect.reserved() or {}
     scheduled_raw = inspect.scheduled() or {}
@@ -368,6 +391,24 @@ def get_celery_status(queue_sample_size: int = 1000) -> dict:
     }
 
 
+def get_celery_status(queue_sample_size: int = 1000) -> dict:
+    global _celery_status_cache, _celery_status_cache_until
+
+    if queue_sample_size != 1000:
+        return _collect_celery_status(queue_sample_size)
+
+    with _celery_status_cache_lock:
+        now = time.monotonic()
+        if _celery_status_cache is not None and now < _celery_status_cache_until:
+            return _celery_status_cache
+        status = _collect_celery_status(queue_sample_size)
+        _celery_status_cache = status
+        # Start the TTL after worker inspection. The inspect calls can consume
+        # the timeout budget and otherwise expire a fresh value immediately.
+        _celery_status_cache_until = time.monotonic() + CELERY_STATUS_CACHE_SECONDS
+        return status
+
+
 def _reindex_incr_completed(count: int) -> None:
     client = get_redis()
     client.incrby(f"{REINDEX_STATUS_KEY}:completed", count)
@@ -383,25 +424,6 @@ def _reindex_incr_completed(count: int) -> None:
         }
     )
     set_reindex_status(status)
-
-
-def _missing_text(column) -> object:
-    return func.length(func.trim(func.coalesce(column, ""))) == 0
-
-
-def _count_missing_metadata(session: Session) -> int:
-    return (
-        session.query(models.File.id)
-        .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
-        .distinct()
-        .filter(
-            models.File.deleted_at.is_(None),
-            (models.FileKeyword.file_id.is_(None))
-            | _missing_text(models.File.title)
-            | _missing_text(models.File.description),
-        )
-        .count()
-    )
 
 
 def _is_cancelled(run_id: str) -> bool:
@@ -442,6 +464,19 @@ def _orientation(width: int | None, height: int | None) -> models.Orientation:
     return models.Orientation.portrait
 
 
+def _safe_stat(path: str):
+    try:
+        return os.stat(path)
+    except OSError:
+        return None
+
+
+def _stat_paths(paths: list[str], executor: ThreadPoolExecutor | None) -> list:
+    if executor is None:
+        return [_safe_stat(path) for path in paths]
+    return list(executor.map(_safe_stat, paths))
+
+
 @celery_app.task(name="scan_storage")
 def scan_storage_task(run_id: str | None = None, full_refresh: bool = False) -> dict:
     if settings.storage_mode != "filesystem":
@@ -468,25 +503,20 @@ def scan_storage_task(run_id: str | None = None, full_refresh: bool = False) -> 
             models.File.mtime,
             models.File.size_bytes,
             models.File.deleted_at,
+            models.File.metadata_checked_at,
         ).all()
         existing = {
-            row.original_key: (row.id, row.mtime, row.size_bytes, row.deleted_at)
+            row.original_key: (
+                row.id,
+                row.mtime,
+                row.size_bytes,
+                row.deleted_at,
+                row.metadata_checked_at,
+            )
             for row in rows_all
         }
         existing_active_keys = {row.original_key for row in rows_all if row.deleted_at is None}
-        missing_keywords_ids = {
-            row.id
-            for row in session.query(models.File.id)
-            .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
-            .filter(models.FileKeyword.file_id.is_(None), models.File.deleted_at.is_(None))
-        }
-        missing_text_ids = {
-            row.id
-            for row in session.query(models.File.id).filter(
-                models.File.deleted_at.is_(None),
-                _missing_text(models.File.title) | _missing_text(models.File.description),
-            )
-        }
+        metadata_file_ids: set[str] = set()
         seen_keys: set[str] = set()
         created = 0
         updated = 0
@@ -507,92 +537,115 @@ def scan_storage_task(run_id: str | None = None, full_refresh: bool = False) -> 
                 _clear_cancelled(run_id)
             return {"status": "cancelled"}
 
-        for dirpath, dirnames, filenames in os.walk(root):
-            if run_id and _is_cancelled(run_id):
-                return _abort_run()
-            if _is_excluded(dirpath, excluded):
-                dirnames[:] = []
-                continue
-            if excluded:
-                dirnames[:] = [
-                    name
-                    for name in dirnames
-                    if not _is_excluded(os.path.join(dirpath, name), excluded)
-                ]
-            for filename in filenames:
-                if run_id and _is_cancelled(run_id):
-                    return _abort_run()
-                ext = Path(filename).suffix.lower()
-                if ext not in SUPPORTED_EXTS:
-                    continue
-                full_path = str(Path(dirpath) / filename)
-                try:
-                    stat = os.stat(full_path)
-                except OSError:
-                    continue
-
-                seen_keys.add(full_path)
-                scanned += 1
-                existing_row = existing.get(full_path)
-                if not existing_row:
-                    mime, _ = mimetypes.guess_type(filename)
-                    file_row = models.File(
-                        storage_mode=models.StorageMode.filesystem,
-                        original_key=full_path,
-                        filename=filename,
-                        ext=ext.lstrip("."),
-                        mime=mime or "application/octet-stream",
-                        size_bytes=stat.st_size,
-                        mtime=datetime.utcfromtimestamp(stat.st_mtime),
-                        created_at=datetime.utcnow(),
-                        updated_at=datetime.utcnow(),
-                    )
-                    session.add(file_row)
-                    session.flush()
-                    enqueue_extract_metadata(file_row.id)
-                    created += 1
-                else:
-                    file_id, mtime, size, deleted_at = existing_row
-                    current_mtime = datetime.utcfromtimestamp(stat.st_mtime)
-                    if deleted_at is not None:
-                        session.query(models.File).filter(models.File.id == file_id).update(
-                            {
-                                "deleted_at": None,
-                                "size_bytes": stat.st_size,
-                                "mtime": current_mtime,
-                                "updated_at": datetime.utcnow(),
-                            }
-                        )
-                        enqueue_extract_metadata(file_id)
-                        enqueue_upsert_search_doc(file_id)
-                        restored += 1
-                    elif current_mtime != mtime or stat.st_size != size:
-                        session.query(models.File).filter(models.File.id == file_id).update(
-                            {
-                                "size_bytes": stat.st_size,
-                                "mtime": current_mtime,
-                                "updated_at": datetime.utcnow(),
-                            }
-                        )
-                        enqueue_extract_metadata(file_id)
-                        updated += 1
-                    else:
-                        if file_id in missing_keywords_ids:
-                            enqueue_extract_metadata(file_id)
-                        elif file_id in missing_text_ids:
-                            enqueue_extract_metadata(file_id)
-
-                if run_id and scanned - last_flush >= 500:
-                    session.query(models.IndexRun).filter(models.IndexRun.id == run_id).update(
+        def _process_file(full_path: str, filename: str, ext: str, stat) -> None:
+            nonlocal created, updated, restored, scanned, last_flush
+            seen_keys.add(full_path)
+            scanned += 1
+            existing_row = existing.get(full_path)
+            if not existing_row:
+                mime, _ = mimetypes.guess_type(filename)
+                file_row = models.File(
+                    storage_mode=models.StorageMode.filesystem,
+                    original_key=full_path,
+                    filename=filename,
+                    ext=ext.lstrip("."),
+                    mime=mime or "application/octet-stream",
+                    size_bytes=stat.st_size,
+                    mtime=datetime.utcfromtimestamp(stat.st_mtime),
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                session.add(file_row)
+                session.flush()
+                metadata_file_ids.add(file_row.id)
+                created += 1
+            else:
+                file_id, mtime, size, deleted_at, metadata_checked_at = existing_row
+                current_mtime = datetime.utcfromtimestamp(stat.st_mtime)
+                if deleted_at is not None:
+                    session.query(models.File).filter(models.File.id == file_id).update(
                         {
-                            "scanned_count": scanned,
-                            "created_count": created,
-                            "updated_count": updated,
-                            "restored_count": restored,
+                            "deleted_at": None,
+                            "size_bytes": stat.st_size,
+                            "mtime": current_mtime,
+                            "metadata_checked_at": None,
+                            "metadata_error": None,
+                            "updated_at": datetime.utcnow(),
                         }
                     )
-                    session.commit()
-                    last_flush = scanned
+                    metadata_file_ids.add(file_id)
+                    enqueue_upsert_search_doc(file_id)
+                    restored += 1
+                elif current_mtime != mtime or stat.st_size != size:
+                    session.query(models.File).filter(models.File.id == file_id).update(
+                        {
+                            "size_bytes": stat.st_size,
+                            "mtime": current_mtime,
+                            "metadata_checked_at": None,
+                            "metadata_error": None,
+                            "updated_at": datetime.utcnow(),
+                        }
+                    )
+                    metadata_file_ids.add(file_id)
+                    updated += 1
+                elif metadata_checked_at is None or metadata_checked_at < current_mtime:
+                    metadata_file_ids.add(file_id)
+
+            if run_id and scanned - last_flush >= SCAN_PROGRESS_INTERVAL:
+                session.query(models.IndexRun).filter(models.IndexRun.id == run_id).update(
+                    {
+                        "scanned_count": scanned,
+                        "created_count": created,
+                        "updated_count": updated,
+                        "restored_count": restored,
+                    }
+                )
+                session.commit()
+                last_flush = scanned
+
+        stat_workers = max(1, settings.scan_stat_workers)
+        executor = ThreadPoolExecutor(max_workers=stat_workers) if stat_workers > 1 else None
+        batch: list[tuple[str, str, str]] = []
+        try:
+            for dirpath, dirnames, filenames in os.walk(root):
+                if run_id and _is_cancelled(run_id):
+                    return _abort_run()
+                if _is_excluded(dirpath, excluded):
+                    dirnames[:] = []
+                    continue
+                if excluded:
+                    dirnames[:] = [
+                        name
+                        for name in dirnames
+                        if not _is_excluded(os.path.join(dirpath, name), excluded)
+                    ]
+                for filename in filenames:
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext not in SUPPORTED_EXTS:
+                        continue
+                    full_path = os.path.join(dirpath, filename)
+                    batch.append((full_path, filename, ext))
+                    if len(batch) < SCAN_STAT_BATCH_SIZE:
+                        continue
+
+                    stats = _stat_paths([item[0] for item in batch], executor)
+                    for item, stat in zip(batch, stats):
+                        if run_id and _is_cancelled(run_id):
+                            return _abort_run()
+                        if stat is not None:
+                            _process_file(*item, stat)
+                    batch.clear()
+
+            if batch:
+                stats = _stat_paths([item[0] for item in batch], executor)
+                for item, stat in zip(batch, stats):
+                    if run_id and _is_cancelled(run_id):
+                        return _abort_run()
+                    if stat is not None:
+                        _process_file(*item, stat)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
 
         deleted_keys = existing_active_keys - seen_keys
         if deleted_keys:
@@ -622,6 +675,24 @@ def scan_storage_task(run_id: str | None = None, full_refresh: bool = False) -> 
         session.commit()
         if run_id:
             _clear_cancelled(run_id)
+        if full_refresh:
+            pending_metadata = count_pending_metadata(session)
+            refresh_state = get_full_refresh_status() or {}
+            set_full_refresh_status(
+                {
+                    **refresh_state,
+                    "status": "running",
+                    "stage": "metadata",
+                    "stage_detail": f"Метаданные: осталось {pending_metadata}",
+                    "metadata_baseline": max(
+                        int(refresh_state.get("metadata_baseline") or 0),
+                        pending_metadata,
+                    ),
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+            )
+        for file_id in metadata_file_ids:
+            enqueue_extract_metadata(file_id)
         queue_missing_metadata_task.delay()
         if full_refresh:
             set_preview_exclusive(False)
@@ -665,7 +736,13 @@ def scan_storage_task(run_id: str | None = None, full_refresh: bool = False) -> 
         session.close()
 
 
-@celery_app.task(name="extract_metadata")
+@celery_app.task(
+    name="extract_metadata",
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 3},
+)
 def extract_metadata_task(file_id: str) -> dict:
     if is_preview_exclusive():
         clear_extract_metadata_enqueue(file_id)
@@ -676,12 +753,19 @@ def extract_metadata_task(file_id: str) -> dict:
         return {"status": "deferred", "reason": "preview_exclusive"}
 
     session: Session = SessionLocal()
+    clear_enqueue = True
     try:
         file_row = session.query(models.File).filter(models.File.id == file_id).first()
         if not file_row:
             return {"status": "missing"}
 
-        meta = extract_metadata(file_row.original_key)
+        original_key = file_row.original_key
+        # Do not keep a database transaction open while ExifTool reads a file.
+        session.rollback()
+        meta = extract_metadata(original_key)
+        file_row = session.query(models.File).filter(models.File.id == file_id).first()
+        if not file_row:
+            return {"status": "missing"}
         file_row.mime = meta.get("mime", file_row.mime)
         file_row.width = meta.get("width")
         file_row.height = meta.get("height")
@@ -700,34 +784,89 @@ def extract_metadata_task(file_id: str) -> dict:
             normalized.setdefault(norm, str(value).strip())
 
         existing_keywords = {kw.value_norm: kw for kw in file_row.keywords}
-        new_keywords = []
-        added = 0
-        removed = 0
+        normalized_items = sorted(normalized.items())
+        normalized_values = [norm for norm, _ in normalized_items]
+        keywords_by_norm = {
+            keyword.value_norm: keyword
+            for keyword in session.query(models.Keyword)
+            .filter(models.Keyword.value_norm.in_(normalized_values))
+            .all()
+        } if normalized_values else {}
 
-        for norm, display in normalized.items():
-            keyword = session.query(models.Keyword).filter(models.Keyword.value_norm == norm).first()
-            if not keyword:
-                keyword = models.Keyword(value_norm=norm, value_display=display, usage_count=0)
-                session.add(keyword)
+        missing_items = [item for item in normalized_items if item[0] not in keywords_by_norm]
+        if missing_items:
+            if session.bind and session.bind.dialect.name == "postgresql":
+                session.execute(
+                    pg_insert(models.Keyword)
+                    .values(
+                        [
+                            {
+                                "value_norm": norm,
+                                "value_display": display,
+                                "usage_count": 0,
+                            }
+                            for norm, display in missing_items
+                        ]
+                    )
+                    .on_conflict_do_nothing(index_elements=["value_norm"])
+                )
+                keywords_by_norm = {
+                    keyword.value_norm: keyword
+                    for keyword in session.query(models.Keyword)
+                    .filter(models.Keyword.value_norm.in_(normalized_values))
+                    .all()
+                }
+            else:
+                for norm, display in missing_items:
+                    keyword = models.Keyword(value_norm=norm, value_display=display, usage_count=0)
+                    session.add(keyword)
+                    keywords_by_norm[norm] = keyword
                 session.flush()
-            if norm not in existing_keywords:
-                keyword.usage_count += 1
-                added += 1
-            new_keywords.append(keyword)
 
-        removed_norms = set(existing_keywords.keys()) - set(normalized.keys())
+        added_norms = sorted(set(normalized_values) - set(existing_keywords))
+        removed_norms = sorted(set(existing_keywords) - set(normalized_values))
+        changed_keywords = [keywords_by_norm[norm] for norm in added_norms]
+        changed_keywords.extend(existing_keywords[norm] for norm in removed_norms)
+        changed_ids = sorted(keyword.id for keyword in changed_keywords if keyword.id)
+        if changed_ids:
+            # Every transaction obtains keyword row locks in the same order.
+            session.query(models.Keyword.id).filter(
+                models.Keyword.id.in_(changed_ids)
+            ).order_by(models.Keyword.id).with_for_update().all()
+
+        for norm in added_norms:
+            keywords_by_norm[norm].usage_count += 1
         for norm in removed_norms:
             keyword = existing_keywords[norm]
             if keyword.usage_count > 0:
                 keyword.usage_count -= 1
-            removed += 1
+
+        new_keywords = [keywords_by_norm[norm] for norm in normalized_values]
+        added = len(added_norms)
+        removed = len(removed_norms)
 
         file_row.keywords = new_keywords
+        file_row.keyword_count = len(new_keywords)
+        file_row.metadata_checked_at = datetime.utcnow()
+        file_row.metadata_error = None
         session.commit()
         enqueue_upsert_search_doc(file_row.id)
         return {"status": "ok", "added": added, "removed": removed}
+    except OperationalError:
+        clear_enqueue = False
+        session.rollback()
+        raise
+    except Exception as exc:
+        session.rollback()
+        failed_row = session.query(models.File).filter(models.File.id == file_id).first()
+        if failed_row:
+            failed_row.metadata_checked_at = datetime.utcnow()
+            failed_row.metadata_error = str(exc)[:2000]
+            session.commit()
+        raise
     finally:
-        clear_extract_metadata_enqueue(file_id)
+        if clear_enqueue:
+            clear_extract_metadata_enqueue(file_id)
         session.close()
 
 
@@ -984,13 +1123,9 @@ def queue_missing_metadata_task() -> dict:
     try:
         rows = (
             session.query(models.File.id)
-            .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
-            .distinct()
             .filter(
                 models.File.deleted_at.is_(None),
-                (models.FileKeyword.file_id.is_(None))
-                | _missing_text(models.File.title)
-                | _missing_text(models.File.description),
+                metadata_pending_clause(),
             )
             .all()
         )
@@ -1012,9 +1147,7 @@ def queue_missing_keywords_task() -> dict:
     try:
         rows = (
             session.query(models.File.id)
-            .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
-            .distinct()
-            .filter(models.File.deleted_at.is_(None), models.FileKeyword.file_id.is_(None))
+            .filter(models.File.deleted_at.is_(None), models.File.keyword_count == 0)
             .all()
         )
         for (file_id,) in rows:
@@ -1148,13 +1281,22 @@ def reindex_after_metadata_task(run_id: str | None = None) -> dict:
 
     session: Session = SessionLocal()
     try:
-        missing = _count_missing_metadata(session)
-        if missing > 0:
+        if run_id:
+            run = session.query(models.IndexRun).filter(models.IndexRun.id == run_id).first()
+            if run and run.status == models.IndexRunStatus.running:
+                reindex_after_metadata_task.apply_async(
+                    args=[run_id],
+                    countdown=settings.reindex_wait_interval_seconds,
+                )
+                return {"status": "waiting", "reason": "scan_running"}
+
+        pending = count_pending_metadata(session)
+        if pending > 0:
             reindex_after_metadata_task.apply_async(
                 args=[run_id],
                 countdown=settings.reindex_wait_interval_seconds,
             )
-            return {"status": "waiting", "missing": missing}
+            return {"status": "waiting", "pending": pending}
         reindex_search_task.delay()
         if run_id:
             client.delete(REINDEX_WAIT_KEY)

@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app import models
@@ -9,6 +9,7 @@ from app.audit import log_action
 from app.config import settings
 from app.db import get_db
 from app.deps import require_admin
+from app.metadata_state import count_pending_metadata, missing_metadata_counts
 from app.schemas import (
     AuditLogOut,
     CeleryStatus,
@@ -47,41 +48,30 @@ from app.tasks import (
     set_shot_at_status,
     reset_shot_at_state,
     set_reindex_status,
+    begin_reindex_wait,
     enqueue_extract_metadata,
 )
 
 router = APIRouter()
 
-def _missing_text(column) -> object:
-    return func.length(func.trim(func.coalesce(column, ""))) == 0
-
-
-def _missing_metadata_counts(db: Session) -> dict:
-    missing_keywords = (
-        db.query(models.File.id)
-        .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
-        .filter(models.File.deleted_at.is_(None), models.FileKeyword.file_id.is_(None))
-        .distinct()
-        .count()
-    )
-    missing_text = (
-        db.query(models.File.id)
-        .filter(
-            models.File.deleted_at.is_(None),
-            _missing_text(models.File.title) | _missing_text(models.File.description),
-        )
-        .count()
-    )
-    missing_shot_at = (
-        db.query(models.File.id)
-        .filter(models.File.deleted_at.is_(None), models.File.shot_at.is_(None))
-        .count()
-    )
-    return {
-        "missing_keywords": missing_keywords,
-        "missing_text": missing_text,
-        "missing_shot_at": missing_shot_at,
-    }
+def _refresh_state_is_stale(
+    state: dict,
+    celery_status: dict,
+    run: models.IndexRun | None,
+    now: datetime,
+) -> bool:
+    if state.get("status") not in {"running", "queued", "waiting_metadata"}:
+        return False
+    if celery_status.get("status") != "idle":
+        return False
+    if run and run.status == models.IndexRunStatus.running:
+        return False
+    try:
+        updated_at = datetime.fromisoformat(str(state.get("updated_at")))
+    except (TypeError, ValueError):
+        return False
+    stale_after = timedelta(seconds=max(300, settings.reindex_wait_interval_seconds * 3))
+    return now - updated_at >= stale_after
 
 
 
@@ -116,7 +106,8 @@ def refresh_all(
     run = models.IndexRun(status=models.IndexRunStatus.running)
     db.add(run)
     db.commit()
-    missing_counts = _missing_metadata_counts(db)
+    missing_counts = missing_metadata_counts(db)
+    metadata_baseline = count_pending_metadata(db)
     preview_counts = _preview_counts(db)
     started_at = datetime.utcnow().isoformat()
     set_full_refresh_status(
@@ -127,7 +118,7 @@ def refresh_all(
             "stage_detail": "Сканирование файлов",
             "started_at": started_at,
             "updated_at": started_at,
-            "metadata_baseline": missing_counts["missing_keywords"] + missing_counts["missing_text"],
+            "metadata_baseline": metadata_baseline,
             "shot_at_baseline": missing_counts["missing_shot_at"],
             "preview_baseline": preview_counts["missing_previews"],
             "run_id": run.id,
@@ -143,6 +134,7 @@ def refresh_all(
             "started_at": datetime.utcnow().isoformat(),
         }
     )
+    begin_reindex_wait(run.id)
     scan_storage_task.delay(run.id, True)
     set_reindex_status(
         {
@@ -316,7 +308,7 @@ def reset_shot_at_status(
 
 @router.get("/metadata/missing-summary", response_model=MissingMetadataSummary)
 def missing_metadata_summary(_: models.User = Depends(require_admin), db: Session = Depends(get_db)) -> MissingMetadataSummary:
-    return MissingMetadataSummary(**_missing_metadata_counts(db))
+    return MissingMetadataSummary(**missing_metadata_counts(db))
 
 
 @router.get("/celery/status", response_model=CeleryStatus)
@@ -335,7 +327,8 @@ def full_refresh_status(
     db: Session = Depends(get_db),
 ) -> FullRefreshStatus:
     state = get_full_refresh_status()
-    now = datetime.utcnow().isoformat()
+    now_dt = datetime.utcnow()
+    now = now_dt.isoformat()
     celery = get_celery_status()
     preview_state = get_preview_status() or {}
     if not state:
@@ -368,8 +361,6 @@ def full_refresh_status(
             updated_at=datetime.utcnow(),
         )
 
-    missing_counts = _missing_metadata_counts(db)
-    preview_counts = _preview_counts(db)
     shot = get_shot_at_status() or {}
     reindex = get_reindex_status() or {}
     run_id = state.get("run_id")
@@ -377,13 +368,31 @@ def full_refresh_status(
     if run_id:
         run = db.query(models.IndexRun).filter(models.IndexRun.id == run_id).first()
 
+    if _refresh_state_is_stale(state, celery, run, now_dt):
+        if preview_state.get("status") == "running":
+            set_preview_status({**preview_state, "status": "idle", "updated_at": now})
+        if reindex.get("status") in {"waiting_metadata", "queued", "running"}:
+            set_reindex_status({"status": "idle", "count": 0, "updated_at": now})
+        payload = {
+            **state,
+            "status": "idle",
+            "stage": "idle",
+            "progress": 0,
+            "stage_detail": "Нет активного обновления",
+            "updated_at": now,
+        }
+        set_full_refresh_status(payload)
+        return FullRefreshStatus(**payload)
+
+    metadata_current = count_pending_metadata(db)
+    preview_counts = _preview_counts(db)
+
     stage = "completed"
     status = state.get("status", "running")
     progress = None
     detail = "Обновление завершено"
 
     metadata_baseline = max(1, int(state.get("metadata_baseline") or 0))
-    metadata_current = missing_counts["missing_keywords"] + missing_counts["missing_text"]
     shot_total = int(shot.get("total") or 0)
     shot_scanned = int(shot.get("scanned") or 0)
     preview_progress = int(round(float(preview_counts["progress"]) * 100))
@@ -482,8 +491,7 @@ def missing_keywords(
 ) -> MissingKeywordResponse:
     base = (
         db.query(models.File)
-        .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
-        .filter(models.File.deleted_at.is_(None), models.FileKeyword.file_id.is_(None))
+        .filter(models.File.deleted_at.is_(None), models.File.keyword_count == 0)
     )
     total = base.count()
     rows = (
@@ -512,9 +520,7 @@ def rescan_missing_keywords(
 ) -> dict:
     rows = (
         db.query(models.File.id)
-        .outerjoin(models.FileKeyword, models.FileKeyword.file_id == models.File.id)
-        .distinct()
-        .filter(models.File.deleted_at.is_(None), models.FileKeyword.file_id.is_(None))
+        .filter(models.File.deleted_at.is_(None), models.File.keyword_count == 0)
         .yield_per(1000)
     )
     queued = 0

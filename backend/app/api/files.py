@@ -83,6 +83,7 @@ def update_keywords(
         new_keywords.append(keyword)
 
     file_row.keywords = new_keywords
+    file_row.keyword_count = len(new_keywords)
     log_action(
         db,
         user_id=_.id,

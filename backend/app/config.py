@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     rescan_interval_minutes: int = 60
     reindex_delay_seconds: int = 120
     reindex_wait_interval_seconds: int = 60
+    scan_stat_workers: int = 16
+    celery_expected_workers: int = 8
     preview_check_rounds: int = 3
     preview_check_interval_seconds: int = 60
     preview_exclusive_retry_seconds: int = 120
